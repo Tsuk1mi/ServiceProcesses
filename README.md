@@ -1,18 +1,3 @@
-Ниже — **полная, оформленная архитектурная документация**, которую можно **поместить в GitHub /docs/architecture.md**.
-Документ соответствует требованиям:
-
-* единый UI
-* backend на Rust
-* hexagonal architecture
-* GitOps / IaC / Terraform / Flux
-* k8s / Docker / Helm
-* Observability
-* RabbitMQ
-* S3 / AWS Secrets
-* CI/CD на GitLab
-
-Вставлены **image_group** для визуальной части и **entity-ссылки** на технологии.
-
 ---
 
 # # Архитектурная документация
