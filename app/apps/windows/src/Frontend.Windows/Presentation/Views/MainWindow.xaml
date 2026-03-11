@@ -1,0 +1,114 @@
+<Window x:Class="Frontend.Windows.Presentation.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Frontend.Windows" Height="420" Width="520"
+        WindowStartupLocation="CenterScreen">
+
+  <Window.Resources>
+    <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+  </Window.Resources>
+
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <TextBlock FontSize="18" FontWeight="SemiBold"
+               Text="Windows Desktop Client (тонкий клиент)"/>
+
+    <!-- Верхняя панель: проверка API + статус (как у тебя было) -->
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,0">
+      <Button Width="160" Height="32" Content="Проверить API"
+              Command="{Binding CheckApiCommand}"/>
+      <TextBlock Margin="12,6,0,0" Text="{Binding StatusText}"/>
+    </StackPanel>
+
+    <!-- Контент: AUTH -->
+    <GroupBox Grid.Row="2" Header="Аккаунт" Margin="0,12,0,0">
+      <Grid Margin="12">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Переключатели режимов -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+          <Button Width="110" Height="30" Content="Вход" Margin="0,0,8,0"
+                  Command="{Binding ShowLoginCommand}"/>
+          <Button Width="130" Height="30" Content="Регистрация" Margin="0,0,8,0"
+                  Command="{Binding ShowRegisterCommand}"/>
+          <Button Width="150" Height="30" Content="Восстановление"
+                  Command="{Binding ShowRecoverCommand}"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+          <!-- LOGIN -->
+          <StackPanel Visibility="{Binding IsLoginView, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Email" Margin="0,0,0,6"/>
+            <TextBox Height="28"
+                     Text="{Binding LoginEmail, UpdateSourceTrigger=PropertyChanged}"
+                     Margin="0,0,0,12"/>
+
+            <TextBlock Text="Пароль" Margin="0,0,0,6"/>
+            <PasswordBox x:Name="LoginPasswordBox"
+                         Height="28"
+                         PasswordChanged="LoginPasswordBox_OnPasswordChanged"
+                         Margin="0,0,0,16"/>
+
+            <Button Height="34" Content="Войти"
+                    Command="{Binding LoginCommand}"/>
+
+            <TextBlock Margin="0,10,0,0" Foreground="Gray" TextWrapping="Wrap"
+                       Text="Если забыли пароль — откройте «Восстановление»."/>
+          </StackPanel>
+
+          <!-- REGISTER -->
+          <StackPanel Visibility="{Binding IsRegisterView, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Email" Margin="0,0,0,6"/>
+            <TextBox Height="28"
+                     Text="{Binding RegisterEmail, UpdateSourceTrigger=PropertyChanged}"
+                     Margin="0,0,0,12"/>
+
+            <TextBlock Text="Пароль" Margin="0,0,0,6"/>
+            <PasswordBox x:Name="RegisterPasswordBox"
+                         Height="28"
+                         PasswordChanged="RegisterPasswordBox_OnPasswordChanged"
+                         Margin="0,0,0,12"/>
+
+            <TextBlock Text="Повторите пароль" Margin="0,0,0,6"/>
+            <PasswordBox x:Name="RegisterPasswordConfirmBox"
+                         Height="28"
+                         PasswordChanged="RegisterPasswordConfirmBox_OnPasswordChanged"
+                         Margin="0,0,0,16"/>
+
+            <Button Height="34" Content="Зарегистрироваться"
+                    Command="{Binding RegisterCommand}"/>
+          </StackPanel>
+
+          <!-- RECOVER -->
+          <StackPanel Visibility="{Binding IsRecoverView, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Email" Margin="0,0,0,6"/>
+            <TextBox Height="28"
+                     Text="{Binding RecoverEmail, UpdateSourceTrigger=PropertyChanged}"
+                     Margin="0,0,0,16"/>
+
+            <Button Height="34" Content="Отправить инструкцию"
+                    Command="{Binding RecoverCommand}"/>
+
+            <TextBlock Margin="0,10,0,0" Foreground="Gray" TextWrapping="Wrap"
+                       Text="Инструкция/код придёт на почту (как реализовано на сервере)."/>
+          </StackPanel>
+        </Grid>
+      </Grid>
+    </GroupBox>
+
+    <TextBlock Grid.Row="3" Margin="0,12,0,0" Foreground="Gray"
+               Text="{Binding FooterText}"/>
+  </Grid>
+</Window>
