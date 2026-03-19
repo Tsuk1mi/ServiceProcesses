@@ -160,6 +160,50 @@ ok
 }
 ```
 
+---
+
+### 2.7 Создать наряд (Work Order)
+
+`POST /api/v1/work-orders`
+
+Тело запроса:
+
+```json
+{
+  "request_id": "req-<uuid>"
+}
+```
+
+Успешный ответ `201 Created`:
+
+```json
+{
+  "id": "wo-<uuid>",
+  "request_id": "req-<uuid>",
+  "assignee": null,
+  "status": "Created"
+}
+```
+
+---
+
+### 2.8 Получить наряды по заявке
+
+`GET /api/v1/requests/{id}/work-orders`
+
+Успешный ответ `200 OK`:
+
+```json
+[
+  {
+    "id": "wo-<uuid>",
+    "request_id": "req-<uuid>",
+    "assignee": null,
+    "status": "Created"
+  }
+]
+```
+
 ## 3. Бизнес-правила статусов
 
 Разрешенные переходы:

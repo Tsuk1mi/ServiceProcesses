@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::domain::entities::{Asset, ServiceRequest};
+use crate::domain::entities::{Asset, ServiceRequest, WorkOrder};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::Priority;
 use crate::ports::outbound::{
     AssetRepository, EventPublisherPort, PriorityPolicyPort, ServiceRequestRepository, SlaPolicyPort,
+    WorkOrderRepository,
 };
 
 #[derive(Clone, Default)]
@@ -88,6 +89,47 @@ impl ServiceRequestRepository for InMemoryRequestRepository {
             .expect("request repo mutex poisoned")
             .insert(request.id.clone(), request);
         Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct InMemoryWorkOrderRepository {
+    data: Arc<Mutex<HashMap<String, WorkOrder>>>,
+}
+
+impl InMemoryWorkOrderRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl WorkOrderRepository for InMemoryWorkOrderRepository {
+    fn save(&self, work_order: WorkOrder) -> Result<(), DomainError> {
+        self.data
+            .lock()
+            .expect("work order repo mutex poisoned")
+            .insert(work_order.id.clone(), work_order);
+        Ok(())
+    }
+
+    fn get_by_id(&self, id: &str) -> Result<Option<WorkOrder>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("work order repo mutex poisoned")
+            .get(id)
+            .cloned())
+    }
+
+    fn list_by_request(&self, request_id: &str) -> Result<Vec<WorkOrder>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("work order repo mutex poisoned")
+            .values()
+            .filter(|wo| wo.request_id == request_id)
+            .cloned()
+            .collect())
     }
 }
 

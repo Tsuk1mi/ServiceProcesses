@@ -1,4 +1,4 @@
-use crate::domain::entities::{Asset, ServiceRequest};
+use crate::domain::entities::{Asset, ServiceRequest, WorkOrder};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::Priority;
 
@@ -25,4 +25,10 @@ pub trait PriorityPolicyPort {
 
 pub trait EventPublisherPort {
     fn publish(&self, topic: &str, payload: &str) -> Result<(), DomainError>;
+}
+
+pub trait WorkOrderRepository {
+    fn save(&self, work_order: WorkOrder) -> Result<(), DomainError>;
+    fn get_by_id(&self, id: &str) -> Result<Option<WorkOrder>, DomainError>;
+    fn list_by_request(&self, request_id: &str) -> Result<Vec<WorkOrder>, DomainError>;
 }

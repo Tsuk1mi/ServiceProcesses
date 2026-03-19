@@ -1,9 +1,10 @@
 use service_processes_core::application::service_request_service::ServiceRequestAppService;
+use service_processes_core::application::work_order_service::WorkOrderAppService;
 use service_processes_core::domain::entities::Asset;
 use service_processes_core::domain::errors::DomainError;
 use service_processes_core::infrastructure::in_memory::{
-    BasicSlaPolicy, InMemoryAssetRepository, InMemoryRequestRepository, KeywordPriorityPolicy,
-    StdoutEventPublisher,
+    BasicSlaPolicy, InMemoryAssetRepository, InMemoryRequestRepository, InMemoryWorkOrderRepository,
+    KeywordPriorityPolicy, StdoutEventPublisher,
 };
 use service_processes_core::interfaces::http::{router, AppState};
 use service_processes_core::ports::outbound::AssetRepository;
@@ -18,6 +19,7 @@ async fn main() -> Result<(), DomainError> {
         "Москва".to_string(),
     )?)?;
     let requests = InMemoryRequestRepository::new();
+    let work_orders = InMemoryWorkOrderRepository::new();
 
     let service = ServiceRequestAppService {
         assets: assets.clone(),
@@ -29,8 +31,14 @@ async fn main() -> Result<(), DomainError> {
 
     let state = AppState {
         assets,
-        requests,
+        requests: requests.clone(),
         service,
+        work_orders: work_orders.clone(),
+        work_order_service: WorkOrderAppService {
+            requests: requests.clone(),
+            work_orders,
+            events: StdoutEventPublisher,
+        },
     };
 
     let app = router(state);

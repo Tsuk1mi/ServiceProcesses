@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::application::service_request_service::ServiceRequestAppService;
-use crate::domain::entities::{Asset, ServiceRequest};
+use crate::application::work_order_service::WorkOrderAppService;
+use crate::domain::entities::{Asset, ServiceRequest, WorkOrder};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::RequestStatus;
 use crate::infrastructure::in_memory::{
-    BasicSlaPolicy, InMemoryAssetRepository, InMemoryRequestRepository, KeywordPriorityPolicy,
-    StdoutEventPublisher,
+    BasicSlaPolicy, InMemoryAssetRepository, InMemoryRequestRepository, InMemoryWorkOrderRepository,
+    KeywordPriorityPolicy, StdoutEventPublisher,
 };
 use crate::ports::inbound::{CreateRequestCommand, ServiceRequestUseCase};
 use crate::ports::outbound::{AssetRepository, ServiceRequestRepository};
@@ -24,12 +25,19 @@ type AppService = ServiceRequestAppService<
     KeywordPriorityPolicy,
     StdoutEventPublisher,
 >;
+type WorkOrderService = WorkOrderAppService<
+    InMemoryRequestRepository,
+    InMemoryWorkOrderRepository,
+    StdoutEventPublisher,
+>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub assets: InMemoryAssetRepository,
     pub requests: InMemoryRequestRepository,
     pub service: AppService,
+    pub work_orders: InMemoryWorkOrderRepository,
+    pub work_order_service: WorkOrderService,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +63,11 @@ pub struct ErrorResponse {
     pub message: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateWorkOrderRequest {
+    pub request_id: String,
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -63,6 +76,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/requests", post(create_request).get(list_requests))
         .route("/api/v1/requests/:id", get(get_request))
         .route("/api/v1/requests/:id/status", put(update_request_status))
+        .route("/api/v1/work-orders", post(create_work_order))
+        .route("/api/v1/requests/:id/work-orders", get(list_work_orders_by_request))
         .with_state(state)
 }
 
@@ -155,6 +170,30 @@ async fn update_request_status(
     }
 }
 
+async fn create_work_order(
+    State(state): State<AppState>,
+    Json(body): Json<CreateWorkOrderRequest>,
+) -> impl IntoResponse {
+    let id = format!("wo-{}", Uuid::new_v4().simple());
+    match state
+        .work_order_service
+        .create_work_order(id, body.request_id)
+    {
+        Ok(order) => (StatusCode::CREATED, Json(order)).into_response(),
+        Err(e) => domain_error_to_response(e),
+    }
+}
+
+async fn list_work_orders_by_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.work_order_service.list_by_request(&id) {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(e) => domain_error_to_response(e),
+    }
+}
+
 fn parse_status(raw: &str) -> Option<RequestStatus> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "new" => Some(RequestStatus::New),
@@ -185,3 +224,6 @@ fn domain_error_to_response(error: DomainError) -> axum::response::Response {
 
 #[allow(dead_code)]
 fn _assert_send_sync(_items: Vec<ServiceRequest>) {}
+
+#[allow(dead_code)]
+fn _assert_send_sync_2(_items: Vec<WorkOrder>) {}

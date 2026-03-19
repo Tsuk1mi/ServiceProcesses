@@ -18,6 +18,8 @@ cargo run
 - `GET /api/v1/requests` - получить список заявок.
 - `GET /api/v1/requests/{id}` - получить заявку по идентификатору.
 - `PUT /api/v1/requests/{id}/status` - обновить статус заявки.
+- `POST /api/v1/work-orders` - создать наряд по заявке.
+- `GET /api/v1/requests/{id}/work-orders` - получить наряды заявки.
 
 ### Примеры payload
 
