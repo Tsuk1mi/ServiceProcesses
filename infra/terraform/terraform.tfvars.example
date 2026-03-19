@@ -1,0 +1,16 @@
+project_name            = "service-processes"
+environment             = "dev"
+aws_region              = "eu-central-1"
+
+# Sensitive values. Keep them in local tfvars, not in git.
+database_url            = "postgres://user:pass@host:5432/service_processes"
+aws_access_key_id       = "REPLACE_ME"
+aws_secret_access_key   = "REPLACE_ME"
+
+# Kubernetes access for Terraform provider
+kubernetes_host         = "https://your-k8s-api:6443"
+kubernetes_token        = "REPLACE_ME"
+kubernetes_ca_certificate = "BASE64_CA_CERT"
+
+rabbitmq_url            = "amqp://rabbitmq.service-processes.svc.cluster.local:5672"
+nexus_url               = "http://nexus.service-processes.svc.cluster.local:8081"

@@ -12,3 +12,13 @@ output "k8s_namespace" {
   value       = kubernetes_namespace.service_processes.metadata[0].name
   description = "Kubernetes namespace for the project"
 }
+
+output "s3_bucket_arn" {
+  value       = aws_s3_bucket.service_files.arn
+  description = "S3 bucket ARN"
+}
+
+output "rabbitmq_deployment_name" {
+  value       = "rabbitmq"
+  description = "RabbitMQ deployment name managed by Terraform"
+}

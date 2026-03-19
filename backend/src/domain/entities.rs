@@ -122,6 +122,31 @@ impl WorkOrder {
             status: WorkOrderStatus::Created,
         })
     }
+
+    pub fn assign(&mut self, assignee: String) -> Result<(), DomainError> {
+        if assignee.trim().is_empty() {
+            return Err(DomainError::EmptyField("assignee"));
+        }
+        self.assignee = Some(assignee);
+        self.status = WorkOrderStatus::Assigned;
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<(), DomainError> {
+        if self.status != WorkOrderStatus::Assigned {
+            return Err(DomainError::InvalidTransition);
+        }
+        self.status = WorkOrderStatus::InProgress;
+        Ok(())
+    }
+
+    pub fn complete(&mut self) -> Result<(), DomainError> {
+        if self.status != WorkOrderStatus::InProgress {
+            return Err(DomainError::InvalidTransition);
+        }
+        self.status = WorkOrderStatus::Completed;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +155,35 @@ pub struct Escalation {
     pub request_id: String,
     pub reason: String,
     pub state: EscalationState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Technician {
+    pub id: String,
+    pub full_name: String,
+    pub skills: Vec<String>,
+    pub is_active: bool,
+}
+
+impl Technician {
+    pub fn new(id: String, full_name: String, skills: Vec<String>) -> Result<Self, DomainError> {
+        if id.trim().is_empty() {
+            return Err(DomainError::EmptyField("id"));
+        }
+        if full_name.trim().is_empty() {
+            return Err(DomainError::EmptyField("full_name"));
+        }
+        if skills.is_empty() {
+            return Err(DomainError::EmptyField("skills"));
+        }
+
+        Ok(Self {
+            id,
+            full_name,
+            skills,
+            is_active: true,
+        })
+    }
 }
 
 impl Escalation {
@@ -150,5 +204,13 @@ impl Escalation {
             reason,
             state: EscalationState::Open,
         })
+    }
+
+    pub fn resolve(&mut self) -> Result<(), DomainError> {
+        if self.state != EscalationState::Open {
+            return Err(DomainError::InvalidTransition);
+        }
+        self.state = EscalationState::Resolved;
+        Ok(())
     }
 }

@@ -25,6 +25,12 @@ provider "aws" {
   region = var.aws_region
 }
 
+provider "kubernetes" {
+  host                   = var.kubernetes_host != "" ? var.kubernetes_host : null
+  token                  = var.kubernetes_token != "" ? var.kubernetes_token : null
+  cluster_ca_certificate = var.kubernetes_ca_certificate != "" ? base64decode(var.kubernetes_ca_certificate) : null
+}
+
 resource "aws_s3_bucket" "service_files" {
   bucket = "${var.project_name}-${var.environment}-files"
   tags   = local.common_tags
@@ -81,5 +87,44 @@ resource "kubernetes_config_map" "backend_config" {
     AWS_SECRET_NAME = aws_secretsmanager_secret.backend_secret.name
     NEXUS_URL    = var.nexus_url
     RABBITMQ_URL = var.rabbitmq_url
+  }
+}
+
+resource "kubernetes_manifest" "rabbitmq" {
+  manifest = {
+    apiVersion = "apps/v1"
+    kind       = "Deployment"
+    metadata = {
+      name      = "rabbitmq"
+      namespace = kubernetes_namespace.service_processes.metadata[0].name
+      labels = {
+        app = "rabbitmq"
+      }
+    }
+    spec = {
+      replicas = 1
+      selector = {
+        matchLabels = {
+          app = "rabbitmq"
+        }
+      }
+      template = {
+        metadata = {
+          labels = {
+            app = "rabbitmq"
+          }
+        }
+        spec = {
+          containers = [{
+            name  = "rabbitmq"
+            image = "rabbitmq:3.13-management"
+            ports = [
+              { containerPort = 5672 },
+              { containerPort = 15672 }
+            ]
+          }]
+        }
+      }
+    }
   }
 }

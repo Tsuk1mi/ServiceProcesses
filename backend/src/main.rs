@@ -1,13 +1,16 @@
+use service_processes_core::application::escalation_service::EscalationAppService;
 use service_processes_core::application::service_request_service::ServiceRequestAppService;
+use service_processes_core::application::technician_service::TechnicianAppService;
 use service_processes_core::application::work_order_service::WorkOrderAppService;
-use service_processes_core::domain::entities::Asset;
+use service_processes_core::domain::entities::{Asset, Technician};
 use service_processes_core::domain::errors::DomainError;
 use service_processes_core::infrastructure::in_memory::{
-    BasicSlaPolicy, InMemoryAssetRepository, InMemoryRequestRepository, InMemoryWorkOrderRepository,
-    KeywordPriorityPolicy, StdoutEventPublisher,
+    BasicSlaPolicy, InMemoryAssetRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
+    InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy,
+    StdoutEventPublisher,
 };
 use service_processes_core::interfaces::http::{router, AppState};
-use service_processes_core::ports::outbound::AssetRepository;
+use service_processes_core::ports::outbound::{AssetRepository, TechnicianRepository};
 
 #[tokio::main]
 async fn main() -> Result<(), DomainError> {
@@ -20,6 +23,13 @@ async fn main() -> Result<(), DomainError> {
     )?)?;
     let requests = InMemoryRequestRepository::new();
     let work_orders = InMemoryWorkOrderRepository::new();
+    let escalations = InMemoryEscalationRepository::new();
+    let technicians = InMemoryTechnicianRepository::new();
+    technicians.save(Technician::new(
+        "tech-1".to_string(),
+        "Иван Иванов".to_string(),
+        vec!["electrical".to_string(), "inspection".to_string()],
+    )?)?;
 
     let service = ServiceRequestAppService {
         assets: assets.clone(),
@@ -37,8 +47,17 @@ async fn main() -> Result<(), DomainError> {
         work_order_service: WorkOrderAppService {
             requests: requests.clone(),
             work_orders,
+            technicians: technicians.clone(),
             events: StdoutEventPublisher,
         },
+        escalations: escalations.clone(),
+        escalation_service: EscalationAppService {
+            requests: requests.clone(),
+            escalations,
+            events: StdoutEventPublisher,
+        },
+        technicians: technicians.clone(),
+        technician_service: TechnicianAppService { technicians },
     };
 
     let app = router(state);

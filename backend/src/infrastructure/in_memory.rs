@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::domain::entities::{Asset, ServiceRequest, WorkOrder};
+use crate::domain::entities::{Asset, Escalation, ServiceRequest, Technician, WorkOrder};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::Priority;
 use crate::ports::outbound::{
     AssetRepository, EventPublisherPort, PriorityPolicyPort, ServiceRequestRepository, SlaPolicyPort,
-    WorkOrderRepository,
+    EscalationRepository, TechnicianRepository, WorkOrderRepository,
 };
 
 #[derive(Clone, Default)]
@@ -128,6 +128,103 @@ impl WorkOrderRepository for InMemoryWorkOrderRepository {
             .expect("work order repo mutex poisoned")
             .values()
             .filter(|wo| wo.request_id == request_id)
+            .cloned()
+            .collect())
+    }
+
+    fn update(&self, work_order: WorkOrder) -> Result<(), DomainError> {
+        self.data
+            .lock()
+            .expect("work order repo mutex poisoned")
+            .insert(work_order.id.clone(), work_order);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct InMemoryEscalationRepository {
+    data: Arc<Mutex<HashMap<String, Escalation>>>,
+}
+
+impl InMemoryEscalationRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl EscalationRepository for InMemoryEscalationRepository {
+    fn save(&self, escalation: Escalation) -> Result<(), DomainError> {
+        self.data
+            .lock()
+            .expect("escalation repo mutex poisoned")
+            .insert(escalation.id.clone(), escalation);
+        Ok(())
+    }
+
+    fn get_by_id(&self, id: &str) -> Result<Option<Escalation>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("escalation repo mutex poisoned")
+            .get(id)
+            .cloned())
+    }
+
+    fn list_by_request(&self, request_id: &str) -> Result<Vec<Escalation>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("escalation repo mutex poisoned")
+            .values()
+            .filter(|item| item.request_id == request_id)
+            .cloned()
+            .collect())
+    }
+
+    fn update(&self, escalation: Escalation) -> Result<(), DomainError> {
+        self.data
+            .lock()
+            .expect("escalation repo mutex poisoned")
+            .insert(escalation.id.clone(), escalation);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct InMemoryTechnicianRepository {
+    data: Arc<Mutex<HashMap<String, Technician>>>,
+}
+
+impl InMemoryTechnicianRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl TechnicianRepository for InMemoryTechnicianRepository {
+    fn save(&self, technician: Technician) -> Result<(), DomainError> {
+        self.data
+            .lock()
+            .expect("technician repo mutex poisoned")
+            .insert(technician.id.clone(), technician);
+        Ok(())
+    }
+
+    fn get_by_id(&self, id: &str) -> Result<Option<Technician>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("technician repo mutex poisoned")
+            .get(id)
+            .cloned())
+    }
+
+    fn list(&self) -> Result<Vec<Technician>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("technician repo mutex poisoned")
+            .values()
             .cloned()
             .collect())
     }

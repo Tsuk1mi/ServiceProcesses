@@ -13,13 +13,24 @@
 
 - Формат данных: JSON.
 - Все запросы отправляются с `Content-Type: application/json`.
-- Текущее API без авторизации (MVP), в следующих итерациях будет добавлен JWT/RBAC.
+- Для операций изменения данных требуется заголовок `x-role`.
+- Поддерживаемые роли:
+  - `dispatcher`
+  - `technician`
+  - `supervisor`
+  - `viewer`
 - Ошибки возвращаются в формате:
 
 ```json
 {
   "message": "описание ошибки"
 }
+```
+
+Пример:
+
+```http
+x-role: dispatcher
 ```
 
 ## 2. Endpoints
@@ -200,6 +211,172 @@ ok
     "request_id": "req-<uuid>",
     "assignee": null,
     "status": "Created"
+  }
+]
+```
+
+---
+
+### 2.9 Назначить исполнителя на наряд
+
+`PUT /api/v1/work-orders/{id}/assign`
+
+Тело запроса:
+
+```json
+{
+  "assignee": "tech-1"
+}
+```
+
+Успешный ответ `200 OK`:
+
+```json
+{
+  "id": "wo-<uuid>",
+  "request_id": "req-<uuid>",
+  "assignee": "tech-1",
+  "status": "Assigned"
+}
+```
+
+---
+
+### 2.10 Начать выполнение наряда
+
+`PUT /api/v1/work-orders/{id}/start`
+
+Успешный ответ `200 OK`:
+
+```json
+{
+  "id": "wo-<uuid>",
+  "request_id": "req-<uuid>",
+  "assignee": "tech-1",
+  "status": "InProgress"
+}
+```
+
+---
+
+### 2.11 Завершить наряд
+
+`PUT /api/v1/work-orders/{id}/complete`
+
+Успешный ответ `200 OK`:
+
+```json
+{
+  "id": "wo-<uuid>",
+  "request_id": "req-<uuid>",
+  "assignee": "tech-1",
+  "status": "Completed"
+}
+```
+
+---
+
+### 2.12 Создать эскалацию
+
+`POST /api/v1/escalations`
+
+Тело запроса:
+
+```json
+{
+  "request_id": "req-<uuid>",
+  "reason": "Нарушение времени реакции SLA"
+}
+```
+
+Успешный ответ `201 Created`:
+
+```json
+{
+  "id": "esc-<uuid>",
+  "request_id": "req-<uuid>",
+  "reason": "Нарушение времени реакции SLA",
+  "state": "Open"
+}
+```
+
+---
+
+### 2.13 Закрыть эскалацию
+
+`PUT /api/v1/escalations/{id}/resolve`
+
+Успешный ответ `200 OK`:
+
+```json
+{
+  "id": "esc-<uuid>",
+  "request_id": "req-<uuid>",
+  "reason": "Нарушение времени реакции SLA",
+  "state": "Resolved"
+}
+```
+
+---
+
+### 2.14 Получить эскалации по заявке
+
+`GET /api/v1/requests/{id}/escalations`
+
+Успешный ответ `200 OK`:
+
+```json
+[
+  {
+    "id": "esc-<uuid>",
+    "request_id": "req-<uuid>",
+    "reason": "Нарушение времени реакции SLA",
+    "state": "Open"
+  }
+]
+```
+
+---
+
+### 2.15 Создать техника
+
+`POST /api/v1/technicians`
+
+Тело запроса:
+
+```json
+{
+  "full_name": "Иван Иванов",
+  "skills": ["electrical", "inspection"]
+}
+```
+
+Успешный ответ `201 Created`:
+
+```json
+{
+  "id": "tech-<uuid>",
+  "full_name": "Иван Иванов",
+  "skills": ["electrical", "inspection"],
+  "is_active": true
+}
+```
+
+---
+
+### 2.16 Получить список техников
+
+`GET /api/v1/technicians`
+
+Успешный ответ `200 OK`:
+
+```json
+[
+  {
+    "id": "tech-<uuid>",
+    "full_name": "Иван Иванов",
+    "skills": ["electrical", "inspection"],
+    "is_active": true
   }
 ]
 ```

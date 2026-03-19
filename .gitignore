@@ -1,2 +1,33 @@
 /target
 /backend/target
+
+# Web frontend artifacts
+/app/apps/web/node_modules/
+/app/apps/web/.next/
+/app/apps/web/dist/
+/app/apps/web/build/
+/app/apps/web/.turbo/
+/app/apps/web/.cache/
+/app/apps/web/coverage/
+
+# Shared JS workspace artifacts
+/app/node_modules/
+/app/.pnpm-store/
+/app/.yarn/
+
+# Windows desktop (.NET) artifacts
+/app/apps/windows/**/bin/
+/app/apps/windows/**/obj/
+/app/apps/windows/**/TestResults/
+/app/apps/windows/**/*.user
+/app/apps/windows/**/*.suo
+/app/apps/windows/**/*.userprefs
+
+# IDE and local env
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+.env
+.env.*
