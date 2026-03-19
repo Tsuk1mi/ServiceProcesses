@@ -1,19 +1,72 @@
+use service_processes_core::application::audit_service::AuditAppService;
 use service_processes_core::application::escalation_service::EscalationAppService;
 use service_processes_core::application::service_request_service::ServiceRequestAppService;
+use service_processes_core::application::sla_service::SlaAppService;
 use service_processes_core::application::technician_service::TechnicianAppService;
 use service_processes_core::application::work_order_service::WorkOrderAppService;
 use service_processes_core::domain::entities::{Asset, Technician};
 use service_processes_core::domain::errors::DomainError;
 use service_processes_core::infrastructure::in_memory::{
     BasicSlaPolicy, InMemoryAssetRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
-    InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy,
+    InMemoryAuditRepository, InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy,
     StdoutEventPublisher,
 };
 use service_processes_core::interfaces::http::{router, AppState};
 use service_processes_core::ports::outbound::{AssetRepository, TechnicianRepository};
+use std::env;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> Result<(), DomainError> {
+    let mode = env::var("APP_MODE").unwrap_or_else(|_| "api".to_string());
+    if mode.eq_ignore_ascii_case("worker") {
+        return run_sla_worker().await;
+    }
+    run_api().await
+}
+
+async fn run_api() -> Result<(), DomainError> {
+    let state = build_state()?;
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
+        .await
+        .expect("failed to bind 0.0.0.0:8080");
+
+    println!("Backend API started at http://0.0.0.0:8080");
+    axum::serve(listener, app)
+        .await
+        .expect("server terminated unexpectedly");
+    Ok(())
+}
+
+async fn run_sla_worker() -> Result<(), DomainError> {
+    let state = build_state()?;
+    let interval_sec = env::var("WORKER_INTERVAL_SEC")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
+
+    println!("SLA worker started, interval={}s", interval_sec);
+    loop {
+        let created = state
+            .sla_service
+            .auto_escalate_overdue(now_epoch(), "Automatic SLA overdue escalation by worker")?;
+        for esc in created {
+            let _ = state.audit_service.record(
+                Some(esc.request_id.clone()),
+                "escalation",
+                "auto_create_overdue_worker",
+                "system",
+                Some("sla-worker".to_string()),
+                format!("escalation_id={}", esc.id),
+            );
+        }
+        sleep(Duration::from_secs(interval_sec)).await;
+    }
+}
+
+fn build_state() -> Result<AppState, DomainError> {
     let assets = InMemoryAssetRepository::new();
     assets.save(Asset::new(
         "asset-1".to_string(),
@@ -25,6 +78,7 @@ async fn main() -> Result<(), DomainError> {
     let work_orders = InMemoryWorkOrderRepository::new();
     let escalations = InMemoryEscalationRepository::new();
     let technicians = InMemoryTechnicianRepository::new();
+    let audit = InMemoryAuditRepository::new();
     technicians.save(Technician::new(
         "tech-1".to_string(),
         "Иван Иванов".to_string(),
@@ -53,21 +107,25 @@ async fn main() -> Result<(), DomainError> {
         escalations: escalations.clone(),
         escalation_service: EscalationAppService {
             requests: requests.clone(),
-            escalations,
+            escalations: escalations.clone(),
             events: StdoutEventPublisher,
         },
         technicians: technicians.clone(),
         technician_service: TechnicianAppService { technicians },
+        audit: audit.clone(),
+        audit_service: AuditAppService { audit },
+        sla_service: SlaAppService {
+            requests: requests.clone(),
+            escalations: escalations.clone(),
+            events: StdoutEventPublisher,
+        },
     };
+    Ok(state)
+}
 
-    let app = router(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
-        .await
-        .expect("failed to bind 0.0.0.0:8080");
-
-    println!("Backend API started at http://0.0.0.0:8080");
-    axum::serve(listener, app)
-        .await
-        .expect("server terminated unexpectedly");
-    Ok(())
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

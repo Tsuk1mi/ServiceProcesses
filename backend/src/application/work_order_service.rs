@@ -75,11 +75,55 @@ where
         Ok(work_order)
     }
 
+    pub fn start_by_actor(&self, work_order_id: &str, actor_id: &str) -> Result<WorkOrder, DomainError> {
+        let mut work_order = self
+            .work_orders
+            .get_by_id(work_order_id)?
+            .ok_or(DomainError::NotFound("work_order"))?;
+        let assignee = work_order
+            .assignee
+            .as_deref()
+            .ok_or(DomainError::Forbidden("work order has no assignee"))?;
+        if assignee != actor_id {
+            return Err(DomainError::Forbidden(
+                "technician can start only their own work order",
+            ));
+        }
+        work_order.start()?;
+        self.work_orders.update(work_order.clone())?;
+        self.events.publish("work_order.started", &format!("id={}", work_order.id))?;
+        Ok(work_order)
+    }
+
     pub fn complete(&self, work_order_id: &str) -> Result<WorkOrder, DomainError> {
         let mut work_order = self
             .work_orders
             .get_by_id(work_order_id)?
             .ok_or(DomainError::NotFound("work_order"))?;
+        work_order.complete()?;
+        self.work_orders.update(work_order.clone())?;
+        self.events.publish("work_order.completed", &format!("id={}", work_order.id))?;
+        Ok(work_order)
+    }
+
+    pub fn complete_by_actor(
+        &self,
+        work_order_id: &str,
+        actor_id: &str,
+    ) -> Result<WorkOrder, DomainError> {
+        let mut work_order = self
+            .work_orders
+            .get_by_id(work_order_id)?
+            .ok_or(DomainError::NotFound("work_order"))?;
+        let assignee = work_order
+            .assignee
+            .as_deref()
+            .ok_or(DomainError::Forbidden("work order has no assignee"))?;
+        if assignee != actor_id {
+            return Err(DomainError::Forbidden(
+                "technician can complete only their own work order",
+            ));
+        }
         work_order.complete()?;
         self.work_orders.update(work_order.clone())?;
         self.events.publish("work_order.completed", &format!("id={}", work_order.id))?;

@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sla-worker
+  namespace: service-processes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sla-worker
+  template:
+    metadata:
+      labels:
+        app: sla-worker
+    spec:
+      containers:
+        - name: sla-worker
+          image: nexus.example.local/repository/service-processes/backend:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: APP_MODE
+              value: worker
+            - name: WORKER_INTERVAL_SEC
+              value: "30"
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: backend-secrets

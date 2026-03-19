@@ -3,6 +3,7 @@ use crate::domain::value_objects::{
     AssetState, EscalationState, Priority, RequestStatus, WorkOrderStatus,
 };
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Asset {
@@ -46,6 +47,7 @@ pub struct ServiceRequest {
     pub priority: Priority,
     pub status: RequestStatus,
     pub sla_minutes: u32,
+    pub created_at_epoch_sec: u64,
 }
 
 impl ServiceRequest {
@@ -76,6 +78,10 @@ impl ServiceRequest {
             priority,
             status: RequestStatus::New,
             sla_minutes,
+            created_at_epoch_sec: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
         })
     }
 
@@ -95,6 +101,10 @@ impl ServiceRequest {
 
         self.status = next;
         Ok(())
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status, RequestStatus::Resolved | RequestStatus::Closed)
     }
 }
 
@@ -163,6 +173,62 @@ pub struct Technician {
     pub full_name: String,
     pub skills: Vec<String>,
     pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditRecord {
+    pub id: String,
+    pub request_id: Option<String>,
+    pub entity: String,
+    pub action: String,
+    pub actor_role: String,
+    pub actor_id: Option<String>,
+    pub details: String,
+    pub created_at_utc: String,
+}
+
+impl AuditRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: String,
+        request_id: Option<String>,
+        entity: String,
+        action: String,
+        actor_role: String,
+        actor_id: Option<String>,
+        details: String,
+        created_at_utc: String,
+    ) -> Result<Self, DomainError> {
+        if id.trim().is_empty() {
+            return Err(DomainError::EmptyField("id"));
+        }
+        if entity.trim().is_empty() {
+            return Err(DomainError::EmptyField("entity"));
+        }
+        if action.trim().is_empty() {
+            return Err(DomainError::EmptyField("action"));
+        }
+        if actor_role.trim().is_empty() {
+            return Err(DomainError::EmptyField("actor_role"));
+        }
+        if details.trim().is_empty() {
+            return Err(DomainError::EmptyField("details"));
+        }
+        if created_at_utc.trim().is_empty() {
+            return Err(DomainError::EmptyField("created_at_utc"));
+        }
+
+        Ok(Self {
+            id,
+            request_id,
+            entity,
+            action,
+            actor_role,
+            actor_id,
+            details,
+            created_at_utc,
+        })
+    }
 }
 
 impl Technician {

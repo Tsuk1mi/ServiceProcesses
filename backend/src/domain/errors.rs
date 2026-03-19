@@ -6,6 +6,7 @@ pub enum DomainError {
     EmptyField(&'static str),
     InvalidTransition,
     NotFound(&'static str),
+    Forbidden(&'static str),
 }
 
 impl Display for DomainError {
@@ -14,6 +15,7 @@ impl Display for DomainError {
             DomainError::EmptyField(field) => write!(f, "field '{field}' must not be empty"),
             DomainError::InvalidTransition => write!(f, "invalid status transition"),
             DomainError::NotFound(entity) => write!(f, "{entity} not found"),
+            DomainError::Forbidden(message) => write!(f, "{message}"),
         }
     }
 }

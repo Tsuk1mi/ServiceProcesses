@@ -33,6 +33,14 @@
 x-role: dispatcher
 ```
 
+Для роли `technician` в операциях `start/complete` наряда обязателен заголовок:
+
+```http
+x-actor-id: tech-<id>
+```
+
+Техник может начать/завершить только наряд, где он назначен исполнителем.
+
 ## 2. Endpoints
 
 ### 2.1 Health check
@@ -126,6 +134,12 @@ ok
 
 `GET /api/v1/requests`
 
+Query-параметры:
+- `limit` (опционально)
+- `offset` (опционально)
+- `status` (опционально): `New`, `Planned`, `InProgress`, `Resolved`, `Closed`, `Escalated`
+- `priority` (опционально): `Low`, `Medium`, `High`, `Critical`
+
 Успешный ответ `200 OK`:
 
 ```json
@@ -137,6 +151,32 @@ ok
     "priority": "High",
     "status": "New",
     "sla_minutes": 240
+  }
+]
+```
+
+---
+
+### 2.5.1 Получить просроченные заявки
+
+`GET /api/v1/requests/overdue`
+
+Query-параметры:
+- `limit` (опционально)
+- `offset` (опционально)
+
+Успешный ответ `200 OK`:
+
+```json
+[
+  {
+    "id": "req-<uuid>",
+    "asset_id": "asset-<uuid>",
+    "description": "Срочно: отказ системы питания",
+    "priority": "High",
+    "status": "New",
+    "sla_minutes": 240,
+    "created_at_epoch_sec": 1742380000
   }
 ]
 ```
@@ -201,6 +241,10 @@ ok
 ### 2.8 Получить наряды по заявке
 
 `GET /api/v1/requests/{id}/work-orders`
+
+Query-параметры:
+- `limit` (опционально)
+- `offset` (опционально)
 
 Успешный ответ `200 OK`:
 
@@ -319,9 +363,29 @@ ok
 
 ---
 
+### 2.13.1 Автоэскалация просроченных заявок
+
+`POST /api/v1/sla/escalate-overdue`
+
+Требуемая роль: `dispatcher` или `supervisor`.
+
+Успешный ответ `200 OK`:
+
+```json
+{
+  "created": 2
+}
+```
+
+---
+
 ### 2.14 Получить эскалации по заявке
 
 `GET /api/v1/requests/{id}/escalations`
+
+Query-параметры:
+- `limit` (опционально)
+- `offset` (опционально)
 
 Успешный ответ `200 OK`:
 
@@ -368,6 +432,10 @@ ok
 
 `GET /api/v1/technicians`
 
+Query-параметры:
+- `limit` (опционально)
+- `offset` (опционально)
+
 Успешный ответ `200 OK`:
 
 ```json
@@ -377,6 +445,33 @@ ok
     "full_name": "Иван Иванов",
     "skills": ["electrical", "inspection"],
     "is_active": true
+  }
+]
+```
+
+---
+
+### 2.17 Получить аудит по заявке
+
+`GET /api/v1/requests/{id}/audit`
+
+Query-параметры:
+- `limit` (опционально)
+- `offset` (опционально)
+
+Успешный ответ `200 OK`:
+
+```json
+[
+  {
+    "id": "aud-<id>",
+    "request_id": "req-<uuid>",
+    "entity": "work_order",
+    "action": "assign",
+    "actor_role": "dispatcher",
+    "actor_id": "disp-1",
+    "details": "work_order_id=wo-<uuid>,assignee=tech-1",
+    "created_at_utc": "1742380000"
   }
 ]
 ```
@@ -398,6 +493,7 @@ ok
 - `201 Created` - сущность создана.
 - `400 Bad Request` - некорректные входные данные.
 - `404 Not Found` - сущность не найдена.
+- `403 Forbidden` - недостаточно прав или действие запрещено правилами.
 - `409 Conflict` - конфликт бизнес-правил (например, переход статуса).
 
 ## 5. Рекомендации для UI-команд
@@ -406,3 +502,11 @@ ok
 - После `POST /api/v1/requests` делать обновление списка заявок (`GET /api/v1/requests`).
 - Для карточек заявок отображать `priority`, `status`, `sla_minutes`.
 - Использовать единый клиент API SDK для Windows, Android и Web, чтобы унифицировать обработку ошибок.
+
+## 6. Режимы контейнеров backend
+
+- `APP_MODE=api` - запуск HTTP API.
+- `APP_MODE=worker` - запуск SLA worker для автоэскалации просроченных заявок.
+
+Параметры worker:
+- `WORKER_INTERVAL_SEC` - интервал проверки просрочки в секундах.

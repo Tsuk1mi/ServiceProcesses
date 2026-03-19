@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::domain::entities::{Asset, Escalation, ServiceRequest, Technician, WorkOrder};
+use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Technician, WorkOrder};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::Priority;
 use crate::ports::outbound::{
-    AssetRepository, EventPublisherPort, PriorityPolicyPort, ServiceRequestRepository, SlaPolicyPort,
-    EscalationRepository, TechnicianRepository, WorkOrderRepository,
+    AssetRepository, AuditRepository, EscalationRepository, EventPublisherPort, PriorityPolicyPort,
+    ServiceRequestRepository, SlaPolicyPort, TechnicianRepository, WorkOrderRepository,
 };
 
 #[derive(Clone, Default)]
@@ -225,6 +225,45 @@ impl TechnicianRepository for InMemoryTechnicianRepository {
             .lock()
             .expect("technician repo mutex poisoned")
             .values()
+            .cloned()
+            .collect())
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct InMemoryAuditRepository {
+    data: Arc<Mutex<Vec<AuditRecord>>>,
+}
+
+impl InMemoryAuditRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl AuditRepository for InMemoryAuditRepository {
+    fn save(&self, record: AuditRecord) -> Result<(), DomainError> {
+        self.data.lock().expect("audit repo mutex poisoned").push(record);
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<AuditRecord>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("audit repo mutex poisoned")
+            .iter()
+            .cloned()
+            .collect())
+    }
+
+    fn list_by_request(&self, request_id: &str) -> Result<Vec<AuditRecord>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("audit repo mutex poisoned")
+            .iter()
+            .filter(|r| r.request_id.as_deref() == Some(request_id))
             .cloned()
             .collect())
     }

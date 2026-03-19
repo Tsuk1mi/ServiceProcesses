@@ -1,4 +1,4 @@
-use crate::domain::entities::{Asset, Escalation, ServiceRequest, Technician, WorkOrder};
+use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Technician, WorkOrder};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::Priority;
 
@@ -45,4 +45,10 @@ pub trait TechnicianRepository {
     fn save(&self, technician: Technician) -> Result<(), DomainError>;
     fn get_by_id(&self, id: &str) -> Result<Option<Technician>, DomainError>;
     fn list(&self) -> Result<Vec<Technician>, DomainError>;
+}
+
+pub trait AuditRepository {
+    fn save(&self, record: AuditRecord) -> Result<(), DomainError>;
+    fn list(&self) -> Result<Vec<AuditRecord>, DomainError>;
+    fn list_by_request(&self, request_id: &str) -> Result<Vec<AuditRecord>, DomainError>;
 }
