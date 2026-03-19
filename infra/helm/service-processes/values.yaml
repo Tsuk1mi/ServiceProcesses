@@ -1,0 +1,28 @@
+namespace: service-processes
+
+image:
+  repository: nexus.example.local/repository/service-processes/backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+api:
+  replicaCount: 2
+  servicePort: 80
+  containerPort: 8080
+  mode: api
+
+worker:
+  enabled: true
+  replicaCount: 1
+  mode: worker
+  intervalSec: 30
+
+config:
+  RUST_LOG: info
+  RABBITMQ_URL: amqp://rabbitmq.service-processes.svc.cluster.local:5672
+  S3_ENDPOINT: http://s3.service-processes.svc.cluster.local:9000
+  S3_BUCKET: service-processes
+  NEXUS_URL: http://nexus.service-processes.svc.cluster.local:8081
+
+secrets:
+  existingSecretName: backend-secrets

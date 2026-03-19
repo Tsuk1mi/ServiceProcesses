@@ -33,3 +33,21 @@ docker compose up -d --build
 kubectl apply -f infra/k8s/namespace.yaml
 kubectl apply -f infra/k8s/
 ```
+
+## Kubernetes via Helm (recommended)
+
+Chart расположен в `infra/helm/service-processes`.
+
+Установка:
+
+```bash
+helm upgrade --install service-processes infra/helm/service-processes
+```
+
+Переопределение image/tag:
+
+```bash
+helm upgrade --install service-processes infra/helm/service-processes \
+  --set image.repository=nexus.example.local/repository/service-processes/backend \
+  --set image.tag=latest
+```

@@ -1,0 +1,31 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sla-worker
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      app: sla-worker
+  template:
+    metadata:
+      labels:
+        app: sla-worker
+    spec:
+      containers:
+        - name: sla-worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: APP_MODE
+              value: {{ .Values.worker.mode | quote }}
+            - name: WORKER_INTERVAL_SEC
+              value: {{ .Values.worker.intervalSec | quote }}
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: {{ .Values.secrets.existingSecretName }}
+{{- end }}
