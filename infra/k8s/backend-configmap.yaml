@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: service-processes
+data:
+  RUST_LOG: info
+  RABBITMQ_URL: amqp://rabbitmq.service-processes.svc.cluster.local:5672
+  S3_ENDPOINT: http://s3.service-processes.svc.cluster.local:9000
+  S3_BUCKET: service-processes
+  NEXUS_URL: http://nexus.service-processes.svc.cluster.local:8081
