@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 use crate::application::audit_service::AuditAppService;
 use crate::application::escalation_service::EscalationAppService;
+use crate::application::analytics_snapshot_service::AnalyticsSnapshotAppService;
+use crate::application::reporting_service::ReportingAppService;
 use crate::application::service_request_service::ServiceRequestAppService;
 use crate::application::sla_service::SlaAppService;
 use crate::application::technician_service::TechnicianAppService;
@@ -17,9 +19,9 @@ use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Te
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::RequestStatus;
 use crate::infrastructure::in_memory::{
-    BasicSlaPolicy, InMemoryAssetRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
-    InMemoryAuditRepository, InMemoryTechnicianRepository, InMemoryWorkOrderRepository,
-    KeywordPriorityPolicy, StdoutEventPublisher,
+    BasicSlaPolicy, InMemoryAnalyticsQuery, InMemoryAnalyticsSnapshotRepository, InMemoryAssetRepository,
+    InMemoryAuditRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
+    InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy, StdoutEventPublisher,
 };
 use crate::ports::inbound::{CreateRequestCommand, ServiceRequestUseCase};
 use crate::ports::outbound::{AssetRepository, ServiceRequestRepository};
@@ -46,6 +48,9 @@ type TechnicianService = TechnicianAppService<InMemoryTechnicianRepository>;
 type AuditService = AuditAppService<InMemoryAuditRepository>;
 type SlaService =
     SlaAppService<InMemoryRequestRepository, InMemoryEscalationRepository, StdoutEventPublisher>;
+type ReportingService = ReportingAppService<InMemoryAnalyticsQuery>;
+type AnalyticsSnapshotService =
+    AnalyticsSnapshotAppService<InMemoryAnalyticsQuery, InMemoryAnalyticsSnapshotRepository>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -61,6 +66,8 @@ pub struct AppState {
     pub audit: InMemoryAuditRepository,
     pub audit_service: AuditService,
     pub sla_service: SlaService,
+    pub reporting_service: ReportingService,
+    pub analytics_snapshot_service: AnalyticsSnapshotService,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,11 +157,21 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/requests/:id/escalations", get(list_escalations_by_request))
         .route("/api/v1/technicians", post(create_technician).get(list_technicians))
         .route("/api/v1/requests/:id/audit", get(list_request_audit))
+        .route("/api/v1/dashboard/summary", get(get_dashboard_summary))
+        .route("/api/v1/dashboard/sla-compliance", get(get_sla_compliance_summary))
+        .route(
+            "/api/v1/dashboard/sla-compliance-by-priority",
+            get(get_sla_compliance_by_priority_summary),
+        )
+        .route(
+            "/api/v1/dashboard/technicians/workload",
+            get(get_technician_workload_summary),
+        )
         .with_state(state)
 }
 
 async fn health() -> impl IntoResponse {
-    (StatusCode::OK, "ok")
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
 }
 
 async fn create_asset(
@@ -654,6 +671,105 @@ async fn list_request_audit(
 ) -> impl IntoResponse {
     match state.audit_service.list_by_request(&id) {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
+        Err(e) => domain_error_to_response(e),
+    }
+}
+
+async fn get_dashboard_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(response) = authorize(
+        &headers,
+        &[
+            ActorRole::Supervisor,
+            ActorRole::Dispatcher,
+            ActorRole::Viewer,
+            ActorRole::Technician,
+        ],
+    ) {
+        return response;
+    }
+    match state
+        .analytics_snapshot_service
+        .get_dashboard_summary(now_epoch())
+    {
+        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        Err(e) => domain_error_to_response(e),
+    }
+}
+
+async fn get_technician_workload_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> impl IntoResponse {
+    if let Err(response) = authorize(
+        &headers,
+        &[
+            ActorRole::Supervisor,
+            ActorRole::Dispatcher,
+            ActorRole::Viewer,
+            ActorRole::Technician,
+        ],
+    ) {
+        return response;
+    }
+    match state
+        .analytics_snapshot_service
+        .get_technician_workload_summary(now_epoch())
+    {
+        Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
+        Err(e) => domain_error_to_response(e),
+    }
+}
+
+async fn get_sla_compliance_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(response) = authorize(
+        &headers,
+        &[
+            ActorRole::Supervisor,
+            ActorRole::Dispatcher,
+            ActorRole::Viewer,
+            ActorRole::Technician,
+        ],
+    ) {
+        return response;
+    }
+    match state
+        .analytics_snapshot_service
+        .get_sla_compliance_summary(now_epoch())
+    {
+        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        Err(e) => domain_error_to_response(e),
+    }
+}
+
+async fn get_sla_compliance_by_priority_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> impl IntoResponse {
+    if let Err(response) = authorize(
+        &headers,
+        &[
+            ActorRole::Supervisor,
+            ActorRole::Dispatcher,
+            ActorRole::Viewer,
+            ActorRole::Technician,
+        ],
+    ) {
+        return response;
+    }
+    match state
+        .analytics_snapshot_service
+        .get_sla_compliance_by_priority_summary(now_epoch())
+    {
+        Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset)))
+            .into_response(),
         Err(e) => domain_error_to_response(e),
     }
 }

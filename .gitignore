@@ -23,6 +23,12 @@
 /app/apps/windows/**/*.suo
 /app/apps/windows/**/*.userprefs
 
+# Android (Gradle)
+/app/apps/android/.gradle/
+/app/apps/android/**/build/
+/app/apps/android/**/*.iml
+/app/apps/android/local.properties
+
 # IDE and local env
 .DS_Store
 Thumbs.db

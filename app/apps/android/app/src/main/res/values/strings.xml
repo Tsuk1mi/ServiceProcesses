@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ServiceProcesses</string>
+    <string name="hint_tap_check">Нажмите «Проверить API». Убедитесь, что backend запущен.</string>
+    <string name="action_check_api">Проверить API</string>
+    <string name="status_checking">Проверка…</string>
+    <string name="status_ok">API доступен\n%s</string>
+    <string name="status_http_error">Ошибка HTTP %1$d\n%2$s</string>
+    <string name="status_error">Ошибка: %1$s</string>
+</resources>

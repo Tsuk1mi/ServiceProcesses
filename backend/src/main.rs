@@ -1,5 +1,7 @@
 use service_processes_core::application::audit_service::AuditAppService;
 use service_processes_core::application::escalation_service::EscalationAppService;
+use service_processes_core::application::analytics_snapshot_service::AnalyticsSnapshotAppService;
+use service_processes_core::application::reporting_service::ReportingAppService;
 use service_processes_core::application::service_request_service::ServiceRequestAppService;
 use service_processes_core::application::sla_service::SlaAppService;
 use service_processes_core::application::technician_service::TechnicianAppService;
@@ -8,8 +10,9 @@ use service_processes_core::domain::entities::{Asset, Technician};
 use service_processes_core::domain::errors::DomainError;
 use service_processes_core::infrastructure::in_memory::{
     BasicSlaPolicy, InMemoryAssetRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
-    InMemoryAuditRepository, InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy,
-    StdoutEventPublisher,
+    InMemoryAnalyticsQuery, InMemoryAnalyticsSnapshotRepository, InMemoryAuditRepository,
+    InMemoryTechnicianRepository,
+    InMemoryWorkOrderRepository, KeywordPriorityPolicy, StdoutEventPublisher,
 };
 use service_processes_core::interfaces::http::{router, AppState};
 use service_processes_core::ports::outbound::{AssetRepository, TechnicianRepository};
@@ -62,6 +65,11 @@ async fn run_sla_worker() -> Result<(), DomainError> {
                 format!("escalation_id={}", esc.id),
             );
         }
+
+        // Update cached analytics snapshot for UI dashboards.
+        state
+            .analytics_snapshot_service
+            .refresh(now_epoch())?;
         sleep(Duration::from_secs(interval_sec)).await;
     }
 }
@@ -93,6 +101,18 @@ fn build_state() -> Result<AppState, DomainError> {
         events: StdoutEventPublisher,
     };
 
+    let analytics_query = InMemoryAnalyticsQuery {
+        requests: requests.clone(),
+        work_orders: work_orders.clone(),
+        escalations: escalations.clone(),
+        technicians: technicians.clone(),
+    };
+    let analytics_snapshots = InMemoryAnalyticsSnapshotRepository::new();
+    let analytics_snapshot_service = AnalyticsSnapshotAppService {
+        analytics: analytics_query.clone(),
+        snapshots: analytics_snapshots,
+    };
+
     let state = AppState {
         assets,
         requests: requests.clone(),
@@ -100,7 +120,7 @@ fn build_state() -> Result<AppState, DomainError> {
         work_orders: work_orders.clone(),
         work_order_service: WorkOrderAppService {
             requests: requests.clone(),
-            work_orders,
+            work_orders: work_orders.clone(),
             technicians: technicians.clone(),
             events: StdoutEventPublisher,
         },
@@ -111,7 +131,9 @@ fn build_state() -> Result<AppState, DomainError> {
             events: StdoutEventPublisher,
         },
         technicians: technicians.clone(),
-        technician_service: TechnicianAppService { technicians },
+        technician_service: TechnicianAppService {
+            technicians: technicians.clone(),
+        },
         audit: audit.clone(),
         audit_service: AuditAppService { audit },
         sla_service: SlaAppService {
@@ -119,6 +141,10 @@ fn build_state() -> Result<AppState, DomainError> {
             escalations: escalations.clone(),
             events: StdoutEventPublisher,
         },
+        reporting_service: ReportingAppService {
+            analytics: analytics_query.clone(),
+        },
+        analytics_snapshot_service,
     };
     Ok(state)
 }

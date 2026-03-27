@@ -3,9 +3,14 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Technician, WorkOrder};
 use crate::domain::errors::DomainError;
-use crate::domain::value_objects::Priority;
+use crate::domain::analytics::{
+    AnalyticsSnapshot, DashboardSummary, SlaComplianceByPriorityItem, SlaComplianceSummary,
+    TechnicianWorkloadSummary,
+};
+use crate::domain::value_objects::{EscalationState, Priority, RequestStatus, WorkOrderStatus};
 use crate::ports::outbound::{
-    AssetRepository, AuditRepository, EscalationRepository, EventPublisherPort, PriorityPolicyPort,
+    AnalyticsQueryPort, AnalyticsSnapshotRepository, AssetRepository, AuditRepository, EscalationRepository,
+    EventPublisherPort, PriorityPolicyPort,
     ServiceRequestRepository, SlaPolicyPort, TechnicianRepository, WorkOrderRepository,
 };
 
@@ -121,6 +126,16 @@ impl WorkOrderRepository for InMemoryWorkOrderRepository {
             .cloned())
     }
 
+    fn list(&self) -> Result<Vec<WorkOrder>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("work order repo mutex poisoned")
+            .values()
+            .cloned()
+            .collect())
+    }
+
     fn list_by_request(&self, request_id: &str) -> Result<Vec<WorkOrder>, DomainError> {
         Ok(self
             .data
@@ -168,6 +183,16 @@ impl EscalationRepository for InMemoryEscalationRepository {
             .expect("escalation repo mutex poisoned")
             .get(id)
             .cloned())
+    }
+
+    fn list(&self) -> Result<Vec<Escalation>, DomainError> {
+        Ok(self
+            .data
+            .lock()
+            .expect("escalation repo mutex poisoned")
+            .values()
+            .cloned()
+            .collect())
     }
 
     fn list_by_request(&self, request_id: &str) -> Result<Vec<Escalation>, DomainError> {
@@ -309,6 +334,242 @@ pub struct StdoutEventPublisher;
 impl EventPublisherPort for StdoutEventPublisher {
     fn publish(&self, topic: &str, payload: &str) -> Result<(), DomainError> {
         println!("[event] topic={topic}; payload={payload}");
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct InMemoryAnalyticsQuery {
+    pub requests: InMemoryRequestRepository,
+    pub work_orders: InMemoryWorkOrderRepository,
+    pub escalations: InMemoryEscalationRepository,
+    pub technicians: InMemoryTechnicianRepository,
+}
+
+impl AnalyticsQueryPort for InMemoryAnalyticsQuery {
+    fn dashboard_summary(&self, now_epoch: u64) -> Result<DashboardSummary, DomainError> {
+        let requests = self.requests.list()?;
+        let work_orders = self.work_orders.list()?;
+        let escalations = self.escalations.list()?;
+
+        let total_requests = requests.len();
+        let open_requests = requests.iter().filter(|r| !r.is_terminal()).count();
+        let in_progress_requests = requests
+            .iter()
+            .filter(|r| r.status == RequestStatus::InProgress)
+            .count();
+        let resolved_requests = requests
+            .iter()
+            .filter(|r| r.status == RequestStatus::Resolved)
+            .count();
+        let closed_requests = requests
+            .iter()
+            .filter(|r| r.status == RequestStatus::Closed)
+            .count();
+        let overdue_requests = requests
+            .iter()
+            .filter(|r| !r.is_terminal())
+            .filter(|r| now_epoch > r.created_at_epoch_sec + (r.sla_minutes as u64) * 60)
+            .count();
+
+        let total_work_orders = work_orders.len();
+        let active_work_orders = work_orders
+            .iter()
+            .filter(|o| o.status != WorkOrderStatus::Completed && o.status != WorkOrderStatus::Cancelled)
+            .count();
+        let open_escalations = escalations
+            .iter()
+            .filter(|e| e.state == EscalationState::Open)
+            .count();
+
+        Ok(DashboardSummary {
+            total_requests,
+            open_requests,
+            in_progress_requests,
+            resolved_requests,
+            closed_requests,
+            overdue_requests,
+            total_work_orders,
+            active_work_orders,
+            open_escalations,
+        })
+    }
+
+    fn sla_compliance_summary(&self, now_epoch: u64) -> Result<SlaComplianceSummary, DomainError> {
+        let requests = self.requests.list()?;
+        let open_requests = requests.into_iter().filter(|r| !r.is_terminal()).collect::<Vec<_>>();
+        let total_open_requests = open_requests.len();
+        let overdue_open_requests = open_requests
+            .iter()
+            .filter(|r| now_epoch > r.created_at_epoch_sec + (r.sla_minutes as u64) * 60)
+            .count();
+        let compliant_open_requests = total_open_requests.saturating_sub(overdue_open_requests);
+        let compliance_percent = if total_open_requests == 0 {
+            100.0
+        } else {
+            (compliant_open_requests as f64 / total_open_requests as f64) * 100.0
+        };
+
+        Ok(SlaComplianceSummary {
+            total_open_requests,
+            overdue_open_requests,
+            compliant_open_requests,
+            compliance_percent,
+        })
+    }
+
+    fn sla_compliance_by_priority_summary(
+        &self,
+        now_epoch: u64,
+    ) -> Result<Vec<SlaComplianceByPriorityItem>, DomainError> {
+        #[derive(Default, Clone, Copy)]
+        struct Counters {
+            total: usize,
+            overdue: usize,
+        }
+
+        let mut low = Counters::default();
+        let mut medium = Counters::default();
+        let mut high = Counters::default();
+        let mut critical = Counters::default();
+
+        let requests = self.requests.list()?;
+        for req in requests.into_iter().filter(|r| !r.is_terminal()) {
+            let overdue = now_epoch > req.created_at_epoch_sec + (req.sla_minutes as u64) * 60;
+            match req.priority {
+                Priority::Low => {
+                    low.total += 1;
+                    if overdue {
+                        low.overdue += 1;
+                    }
+                }
+                Priority::Medium => {
+                    medium.total += 1;
+                    if overdue {
+                        medium.overdue += 1;
+                    }
+                }
+                Priority::High => {
+                    high.total += 1;
+                    if overdue {
+                        high.overdue += 1;
+                    }
+                }
+                Priority::Critical => {
+                    critical.total += 1;
+                    if overdue {
+                        critical.overdue += 1;
+                    }
+                }
+            }
+        }
+
+        let mut items = Vec::with_capacity(4);
+        for (priority, counters) in [
+            (Priority::Low, low),
+            (Priority::Medium, medium),
+            (Priority::High, high),
+            (Priority::Critical, critical),
+        ] {
+            if counters.total == 0 {
+                continue;
+            }
+            let compliant = counters.total.saturating_sub(counters.overdue);
+            let compliance_percent = (compliant as f64 / counters.total as f64) * 100.0;
+            items.push(SlaComplianceByPriorityItem {
+                priority: format!("{:?}", priority),
+                total_open_requests: counters.total,
+                overdue_open_requests: counters.overdue,
+                compliant_open_requests: compliant,
+                compliance_percent,
+            });
+        }
+
+        items.sort_by(|a, b| a.priority.cmp(&b.priority));
+        Ok(items)
+    }
+
+    fn technician_workload_summary(
+        &self,
+    ) -> Result<Vec<TechnicianWorkloadSummary>, DomainError> {
+        let technicians = self.technicians.list()?;
+        let orders = self.work_orders.list()?;
+
+        let mut by_id: HashMap<String, TechnicianWorkloadSummary> = technicians
+            .into_iter()
+            .map(|t| {
+                (
+                    t.id.clone(),
+                    TechnicianWorkloadSummary {
+                        technician_id: t.id,
+                        full_name: t.full_name,
+                        assigned: 0,
+                        in_progress: 0,
+                        completed: 0,
+                        total: 0,
+                    },
+                )
+            })
+            .collect();
+
+        for order in orders {
+            let Some(assignee) = order.assignee else {
+                continue;
+            };
+            let Some(entry) = by_id.get_mut(&assignee) else {
+                continue;
+            };
+            entry.total += 1;
+            match order.status {
+                WorkOrderStatus::Assigned => entry.assigned += 1,
+                WorkOrderStatus::InProgress => entry.in_progress += 1,
+                WorkOrderStatus::Completed => entry.completed += 1,
+                WorkOrderStatus::Created | WorkOrderStatus::Cancelled => {}
+            }
+        }
+
+        let mut items: Vec<TechnicianWorkloadSummary> = by_id.into_values().collect();
+        items.sort_by(|a, b| {
+            b.total.cmp(&a.total).then_with(|| a.technician_id.cmp(&b.technician_id))
+        });
+        Ok(items)
+    }
+
+    fn list_requests(&self) -> Result<Vec<ServiceRequest>, DomainError> {
+        self.requests.list()
+    }
+
+    fn list_work_orders(&self) -> Result<Vec<WorkOrder>, DomainError> {
+        self.work_orders.list()
+    }
+
+    fn list_escalations(&self) -> Result<Vec<Escalation>, DomainError> {
+        self.escalations.list()
+    }
+
+    fn list_technicians(&self) -> Result<Vec<Technician>, DomainError> {
+        self.technicians.list()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct InMemoryAnalyticsSnapshotRepository {
+    latest: Arc<Mutex<Option<AnalyticsSnapshot>>>,
+}
+
+impl InMemoryAnalyticsSnapshotRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl AnalyticsSnapshotRepository for InMemoryAnalyticsSnapshotRepository {
+    fn get_latest(&self) -> Result<Option<AnalyticsSnapshot>, DomainError> {
+        Ok(self.latest.lock().expect("analytics snapshot mutex poisoned").clone())
+    }
+
+    fn upsert(&self, snapshot: AnalyticsSnapshot) -> Result<(), DomainError> {
+        *self.latest.lock().expect("analytics snapshot mutex poisoned") = Some(snapshot);
         Ok(())
     }
 }

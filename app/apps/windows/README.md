@@ -7,7 +7,7 @@
 - **MVVM**: разделение Views / ViewModels / Models/DTO.
 
 ## Быстрый старт
-См. `docs/developer-guide.md`.
+См. отдельную инструкцию: `../../docs/clients-run-guide.md` (запуск backend + Windows + Android).
 
 ## Архитектура
 См. `docs/architecture.md`.

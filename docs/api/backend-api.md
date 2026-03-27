@@ -47,10 +47,10 @@ x-actor-id: tech-<id>
 
 `GET /health`
 
-Ответ `200 OK`:
+Ответ `200 OK` (JSON):
 
-```text
-ok
+```json
+{ "status": "ok" }
 ```
 
 ---
@@ -472,6 +472,94 @@ Query-параметры:
     "actor_id": "disp-1",
     "details": "work_order_id=wo-<uuid>,assignee=tech-1",
     "created_at_utc": "1742380000"
+  }
+]
+```
+
+---
+
+### 2.18 Получить сводку дашборда
+
+`GET /api/v1/dashboard/summary`
+
+Требуемая роль: `viewer`, `dispatcher`, `supervisor` или `technician`.
+
+Успешный ответ `200 OK`:
+
+```json
+{
+  "total_requests": 12,
+  "open_requests": 8,
+  "in_progress_requests": 3,
+  "resolved_requests": 2,
+  "closed_requests": 2,
+  "overdue_requests": 1,
+  "total_work_orders": 10,
+  "active_work_orders": 4,
+  "open_escalations": 2
+}
+```
+
+---
+
+### 2.19 Получить загрузку техников
+
+`GET /api/v1/dashboard/technicians/workload?limit=50&offset=0`
+
+Требуемая роль: `viewer`, `dispatcher`, `supervisor` или `technician`.
+
+Успешный ответ `200 OK`:
+
+```json
+[
+  {
+    "technician_id": "tech-1",
+    "full_name": "Иван Иванов",
+    "assigned": 1,
+    "in_progress": 2,
+    "completed": 5,
+    "total": 8
+  }
+]
+```
+
+---
+
+### 2.20 Получить SLA compliance по открытым заявкам
+
+`GET /api/v1/dashboard/sla-compliance`
+
+Требуемая роль: `viewer`, `dispatcher`, `supervisor` или `technician`.
+
+Успешный ответ `200 OK`:
+
+```json
+{
+  "total_open_requests": 8,
+  "overdue_open_requests": 2,
+  "compliant_open_requests": 6,
+  "compliance_percent": 75.0
+}
+```
+
+---
+
+### 2.21 Получить SLA compliance по открытым заявкам с разбивкой по приоритетам
+
+`GET /api/v1/dashboard/sla-compliance-by-priority`
+
+Требуемая роль: `viewer`, `dispatcher`, `supervisor` или `technician`.
+
+Успешный ответ `200 OK`:
+
+```json
+[
+  {
+    "priority": "High",
+    "total_open_requests": 5,
+    "overdue_open_requests": 1,
+    "compliant_open_requests": 4,
+    "compliance_percent": 80.0
   }
 ]
 ```

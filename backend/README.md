@@ -25,7 +25,7 @@ cargo run
 - `PUT /api/v1/work-orders/{id}/complete`
 обязательно передавать `x-actor-id: tech-<id>`.
 
-- `GET /health` - проверка доступности backend.
+- `GET /health` - проверка доступности backend (JSON: `{ "status": "ok" }`).
 - `POST /api/v1/assets` - создать объект обслуживания.
 - `GET /api/v1/assets` - получить список объектов.
 - `GET /api/v1/assets/{id}` - получить объект по идентификатору.
@@ -51,6 +51,11 @@ cargo run
 - `GET /api/v1/technicians` - получить список техников.
   - поддерживает query: `limit`, `offset`
 - `GET /api/v1/requests/{id}/audit` - получить аудит действий по заявке.
+  - поддерживает query: `limit`, `offset`
+- `GET /api/v1/dashboard/summary` - получить агрегированную сводку для дашборда.
+- `GET /api/v1/dashboard/sla-compliance` - получить SLA compliance по открытым заявкам.
+- `GET /api/v1/dashboard/sla-compliance-by-priority` - получить SLA compliance по открытым заявкам с разбивкой по приоритетам.
+- `GET /api/v1/dashboard/technicians/workload` - получить сводку загрузки техников.
   - поддерживает query: `limit`, `offset`
 
 ### Примеры payload

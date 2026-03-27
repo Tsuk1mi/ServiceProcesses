@@ -14,8 +14,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        // В промышленном варианте — DI контейнер. Для каркаса: прямое создание.
-        var api = new ApiClient(new HttpClient { BaseAddress = new Uri("https://example.corp/api/") });
+        // Локально backend слушает http://localhost:8080 (см. docs/clients-run-guide.md).
+        var baseUrl = Environment.GetEnvironmentVariable("SERVICE_PROCESSES_API_BASE_URL")
+            ?? "http://localhost:8080/";
+        var api = new ApiClient(new HttpClient { BaseAddress = new Uri(baseUrl) });
         var notifications = new NotificationService();
 
         DataContext = new MainViewModel(api, notifications);
