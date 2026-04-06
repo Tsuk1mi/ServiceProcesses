@@ -37,6 +37,8 @@ async fn run_api() -> Result<(), DomainError> {
         .expect("failed to bind 0.0.0.0:8080");
 
     println!("Backend API started at http://0.0.0.0:8080");
+    println!("OpenAPI JSON: http://0.0.0.0:8080/api-docs/openapi.json");
+    println!("Swagger UI:  http://0.0.0.0:8080/swagger-ui/");
     axum::serve(listener, app)
         .await
         .expect("server terminated unexpectedly");

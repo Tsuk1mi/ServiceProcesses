@@ -4,8 +4,9 @@ use crate::domain::value_objects::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Asset {
     pub id: String,
     pub kind: String,
@@ -39,7 +40,7 @@ impl Asset {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServiceRequest {
     pub id: String,
     pub asset_id: String,
@@ -108,7 +109,7 @@ impl ServiceRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkOrder {
     pub id: String,
     pub request_id: String,
@@ -159,7 +160,7 @@ impl WorkOrder {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Escalation {
     pub id: String,
     pub request_id: String,
@@ -167,7 +168,7 @@ pub struct Escalation {
     pub state: EscalationState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Technician {
     pub id: String,
     pub full_name: String,
@@ -175,7 +176,7 @@ pub struct Technician {
     pub is_active: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuditRecord {
     pub id: String,
     pub request_id: Option<String>,
