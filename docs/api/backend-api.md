@@ -12,14 +12,11 @@
 ## 1. Общие правила интеграции
 
 - Формат данных: JSON.
-- Все запросы отправляются с `Content-Type: application/json`.
-- Для операций изменения данных требуется заголовок `x-role`.
-- Поддерживаемые роли:
-  - `dispatcher`
-  - `technician`
-  - `supervisor`
-  - `viewer`
-- Ошибки возвращаются в формате:
+- Запросы с телом: `Content-Type: application/json`.
+- Защищённые маршруты (`/api/v1/*`): заголовок **`Authorization: Bearer <JWT>`**. Токен выдаётся через `POST /auth/login`.
+- Роли задаются **внутри JWT** (claims `roles`): `admin`, `dispatcher`, `supervisor`, `technician`, `viewer`, `user`. Пользователь с ролью `admin` видит все записи; остальные — только сущности со своим `owner_user_id`.
+- Для `PUT .../work-orders/{id}/start` и `complete`: пользователь с **только** ролью `technician` (без admin/dispatcher/supervisor) выполняет действие от своего `sub` в JWT — идентификатор техника в системе должен совпадать с UUID из токена (см. демо-учётку `technician` в backend).
+- Ошибки часто возвращаются как:
 
 ```json
 {
@@ -27,19 +24,35 @@
 }
 ```
 
-Пример:
+- OpenAPI / Swagger UI: `/api-docs/openapi.json`, `/swagger-ui/`.
+- Фоновые задачи (если на сервере заданы `REDIS_URL` и `RABBITMQ_URL`): `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}` — см. `docs/server-stack.md`.
 
-```http
-x-role: dispatcher
+### 1.1 Вход
+
+`POST /auth/login`
+
+```json
+{
+  "username": "admin",
+  "password": "admin"
+}
 ```
 
-Для роли `technician` в операциях `start/complete` наряда обязателен заголовок:
+Ответ `200 OK`:
 
-```http
-x-actor-id: tech-<id>
+```json
+{
+  "access_token": "<jwt>",
+  "token_type": "Bearer",
+  "expires_in": 86400
+}
 ```
 
-Техник может начать/завершить только наряд, где он назначен исполнителем.
+Далее:
+
+```http
+Authorization: Bearer <jwt>
+```
 
 ## 2. Endpoints
 
@@ -77,7 +90,8 @@ x-actor-id: tech-<id>
   "kind": "building",
   "title": "Склад N2",
   "location": "Санкт-Петербург",
-  "state": "Active"
+  "state": "Active",
+  "owner_user_id": "00000000-0000-0000-0000-000000000001"
 }
 ```
 
@@ -96,7 +110,8 @@ x-actor-id: tech-<id>
     "kind": "building",
     "title": "Склад N2",
     "location": "Санкт-Петербург",
-    "state": "Active"
+    "state": "Active",
+    "owner_user_id": "00000000-0000-0000-0000-000000000001"
   }
 ]
 ```
