@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::domain::entities::AuditRecord;
@@ -6,17 +7,11 @@ use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::AuditRepository;
 
 #[derive(Clone)]
-pub struct AuditAppService<A>
-where
-    A: AuditRepository,
-{
-    pub audit: A,
+pub struct AuditAppService {
+    pub audit: Arc<dyn AuditRepository>,
 }
 
-impl<A> AuditAppService<A>
-where
-    A: AuditRepository + Send + Sync,
-{
+impl AuditAppService {
     pub async fn record(
         &self,
         request_id: Option<String>,
@@ -51,6 +46,7 @@ where
             created_at_utc,
             owner_user_id,
         )?;
+
         self.audit.save(record).await
     }
 

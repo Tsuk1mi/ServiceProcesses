@@ -18,6 +18,17 @@
 
 Полный стек в Docker (Postgres, Redis, RabbitMQ, воркеры): см. **`docs/server-stack.md`** и `infra/docker/docker-compose.yml`.
 
+### 1.1 Docker: БД и брокеры (рекомендуется для прод-подобного режима)
+
+Из каталога `infra/docker`:
+
+```powershell
+cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\infra\docker
+docker compose up -d --build
+```
+
+В контейнерах задаётся **`DATABASE_URL=postgres://app:app@postgres:5432/service_processes`**, плюс **`REDIS_URL`**, **`RABBITMQ_URL`**. API в этом режиме хранит данные в Postgres, кэширует ответы **GET `/api/v1/*`** в Redis, публикует доменные события в exchange **`service_processes.events`** (RabbitMQ), а фоновые задачи (`POST /api/v1/jobs`) идут в очередь **`service_jobs`**. Локальный пример переменных для `cargo run` без Docker: `infra/docker/.env.example`.
+
 ---
 
 ## 2. Требования к окружению
@@ -50,12 +61,30 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 
 ## 3. Запуск сервера (обязательно первым)
 
-Из корня репозитория (или папки `backend`):
+### Вариант A: только backend (in-memory, без Postgres)
+
+Из папки `backend`:
 
 ```powershell
 cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\backend
 cargo run
 ```
+
+Если задать **`REDIS_URL`** и **`RABBITMQ_URL`** (например, после `docker compose up` пробросить порты), включатся кэш GET, события в RabbitMQ и `/api/v1/jobs`.
+
+### Вариант B: Postgres + Redis + RabbitMQ (как в Docker)
+
+Поднимите стек (см. §1.1), затем с теми же URL из `.env.example` (хост `localhost` вместо имён сервисов):
+
+```powershell
+cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\backend
+$env:DATABASE_URL = "postgres://app:app@localhost:5432/service_processes"
+$env:REDIS_URL = "redis://localhost:6379"
+$env:RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
+cargo run
+```
+
+При **непустом `DATABASE_URL`** Redis и RabbitMQ для API **обязательны**.
 
 Ожидаемый вывод в консоли: сервер слушает `0.0.0.0:8080`. Локально с клиента используйте базовый URL:
 

@@ -1,6 +1,7 @@
 version: "3.9"
 
 # Стек: API, SLA-воркер, воркер очереди (RabbitMQ), Postgres, Redis, RabbitMQ.
+# DATABASE_URL / REDIS_URL / RABBITMQ_URL задаются только через environment сервисов (см. .env.example).
 # Запуск из каталога infra/docker: docker compose up -d --build
 
 services:
@@ -15,12 +16,25 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d service_processes"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: service-processes-redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3.13-management
@@ -28,6 +42,13 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
 
   backend:
     build:
@@ -45,9 +66,13 @@ services:
       DATABASE_URL: postgres://app:app@postgres:5432/service_processes
       RUST_LOG: info,tower_http=debug
     depends_on:
-      - postgres
-      - redis
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
 
   sla-worker:
     build:
@@ -59,12 +84,17 @@ services:
       WORKER_INTERVAL_SEC: "30"
       REDIS_URL: redis://redis:6379
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JOB_QUEUE_NAME: service_jobs
       DATABASE_URL: postgres://app:app@postgres:5432/service_processes
       RUST_LOG: info
     depends_on:
-      - postgres
-      - redis
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
 
   queue-worker:
     build:
@@ -76,10 +106,16 @@ services:
       REDIS_URL: redis://redis:6379
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       JOB_QUEUE_NAME: service_jobs
+      DATABASE_URL: postgres://app:app@postgres:5432/service_processes
       RUST_LOG: info
     depends_on:
-      - redis
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest

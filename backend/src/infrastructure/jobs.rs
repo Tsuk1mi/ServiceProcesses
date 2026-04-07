@@ -3,10 +3,11 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
+use async_trait::async_trait;
 use lapin::{
     options::*,
     types::FieldTable,
-    BasicProperties, Connection, ConnectionProperties,
+    BasicProperties, Connection, ConnectionProperties, ExchangeKind,
 };
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,9 @@ use uuid::Uuid;
 
 const JOB_KEY_PREFIX: &str = "job:status:";
 const JOB_TTL_SECS: i64 = 604800; // 7 дней
+
+/// Topic exchange для доменных событий (все `EventPublisherPort` → RabbitMQ).
+pub const DOMAIN_EVENTS_EXCHANGE: &str = "service_processes.events";
 
 #[derive(Debug, Error)]
 pub enum JobError {
@@ -63,6 +67,17 @@ impl JobClient {
             .queue_declare(
                 queue_name,
                 QueueDeclareOptions {
+                    durable: true,
+                    ..Default::default()
+                },
+                FieldTable::default(),
+            )
+            .await?;
+        channel
+            .exchange_declare(
+                DOMAIN_EVENTS_EXCHANGE,
+                ExchangeKind::Topic,
+                lapin::options::ExchangeDeclareOptions {
                     durable: true,
                     ..Default::default()
                 },
@@ -137,6 +152,52 @@ impl JobClient {
         };
         Ok(Some(serde_json::from_str(&s)?))
     }
+
+    pub fn redis_conn(&self) -> redis::aio::ConnectionManager {
+        self.redis.clone()
+    }
+
+    /// Публикация доменного события (routing key = логический topic, например `service_request.created`).
+    pub async fn publish_domain_event(&self, routing_key: &str, payload: &[u8]) -> Result<(), JobError> {
+        let channel = self.rabbit.create_channel().await?;
+        channel
+            .basic_publish(
+                DOMAIN_EVENTS_EXCHANGE,
+                routing_key,
+                BasicPublishOptions::default(),
+                payload,
+                BasicProperties::default()
+                    .with_content_type("text/plain; charset=utf-8".into())
+                    .with_delivery_mode(2),
+            )
+            .await?
+            .await?;
+        Ok(())
+    }
+}
+
+/// Публикует события из application layer в RabbitMQ (и статус задач остаётся в Redis).
+#[derive(Clone)]
+pub struct JobClientEventPublisher {
+    client: Arc<JobClient>,
+}
+
+impl JobClientEventPublisher {
+    pub fn new(client: Arc<JobClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl crate::ports::outbound::EventPublisherPort for JobClientEventPublisher {
+    async fn publish(&self, topic: &str, payload: &str) -> Result<(), crate::domain::errors::DomainError> {
+        self.client
+            .publish_domain_event(topic, payload.as_bytes())
+            .await
+            .map_err(|_| crate::domain::errors::DomainError::EmptyField("rabbitmq_event"))?;
+        tracing::info!(topic = %topic, "domain event published to RabbitMQ");
+        Ok(())
+    }
 }
 
 /// Воркер: читает очередь, обновляет статусы в Redis.
@@ -149,6 +210,17 @@ pub async fn run_worker(redis_url: &str, amqp_url: &str, queue_name: &str) -> Re
         .queue_declare(
             queue_name,
             QueueDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            FieldTable::default(),
+        )
+        .await?;
+    channel
+        .exchange_declare(
+            DOMAIN_EVENTS_EXCHANGE,
+            ExchangeKind::Topic,
+            lapin::options::ExchangeDeclareOptions {
                 durable: true,
                 ..Default::default()
             },

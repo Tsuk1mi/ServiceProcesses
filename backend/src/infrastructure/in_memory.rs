@@ -353,10 +353,10 @@ impl EventPublisherPort for StdoutEventPublisher {
 
 #[derive(Clone)]
 pub struct InMemoryAnalyticsQuery {
-    pub requests: InMemoryRequestRepository,
-    pub work_orders: InMemoryWorkOrderRepository,
-    pub escalations: InMemoryEscalationRepository,
-    pub technicians: InMemoryTechnicianRepository,
+    pub requests: Arc<dyn ServiceRequestRepository>,
+    pub work_orders: Arc<dyn WorkOrderRepository>,
+    pub escalations: Arc<dyn EscalationRepository>,
+    pub technicians: Arc<dyn TechnicianRepository>,
 }
 
 #[async_trait]

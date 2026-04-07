@@ -1,13 +1,17 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::body::Body;
 use axum::extract::{FromRequestParts, Path, Query, State};
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{self, AUTHORIZATION};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::http::{Method, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use http_body_util::BodyExt;
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
@@ -16,7 +20,7 @@ use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
-use crate::auth::{sign_token, verify_token, AuthUser, InMemoryUserStore};
+use crate::auth::{sign_token, verify_token, AuthUser, UserStore};
 
 use crate::application::audit_service::AuditAppService;
 use crate::application::escalation_service::EscalationAppService;
@@ -32,63 +36,36 @@ use crate::domain::analytics::{
 use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Technician, WorkOrder};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::RequestStatus;
-use crate::infrastructure::in_memory::{
-    BasicSlaPolicy, InMemoryAnalyticsQuery, InMemoryAnalyticsSnapshotRepository, InMemoryAssetRepository,
-    InMemoryAuditRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
-    InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy, StdoutEventPublisher,
-};
 use crate::infrastructure::jobs::JobClient;
+use crate::infrastructure::redis_cache::RedisCache;
 use crate::ports::inbound::{CreateRequestCommand, ServiceRequestUseCase};
 use crate::ports::outbound::{
-    AssetRepository, ServiceRequestRepository, WorkOrderRepository,
+    AssetRepository, AuditRepository, EscalationRepository, ServiceRequestRepository, TechnicianRepository,
+    WorkOrderRepository,
 };
-
-type AppService = ServiceRequestAppService<
-    InMemoryAssetRepository,
-    InMemoryRequestRepository,
-    BasicSlaPolicy,
-    KeywordPriorityPolicy,
-    StdoutEventPublisher,
->;
-type WorkOrderService = WorkOrderAppService<
-    InMemoryRequestRepository,
-    InMemoryWorkOrderRepository,
-    InMemoryTechnicianRepository,
-    StdoutEventPublisher,
->;
-type EscalationService = EscalationAppService<
-    InMemoryRequestRepository,
-    InMemoryEscalationRepository,
-    StdoutEventPublisher,
->;
-type TechnicianService = TechnicianAppService<InMemoryTechnicianRepository>;
-type AuditService = AuditAppService<InMemoryAuditRepository>;
-type SlaService =
-    SlaAppService<InMemoryRequestRepository, InMemoryEscalationRepository, StdoutEventPublisher>;
-type ReportingService = ReportingAppService<InMemoryAnalyticsQuery>;
-type AnalyticsSnapshotService =
-    AnalyticsSnapshotAppService<InMemoryAnalyticsQuery, InMemoryAnalyticsSnapshotRepository>;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub assets: InMemoryAssetRepository,
-    pub requests: InMemoryRequestRepository,
-    pub service: AppService,
-    pub work_orders: InMemoryWorkOrderRepository,
-    pub work_order_service: WorkOrderService,
-    pub escalations: InMemoryEscalationRepository,
-    pub escalation_service: EscalationService,
-    pub technicians: InMemoryTechnicianRepository,
-    pub technician_service: TechnicianService,
-    pub audit: InMemoryAuditRepository,
-    pub audit_service: AuditService,
-    pub sla_service: SlaService,
-    pub reporting_service: ReportingService,
-    pub analytics_snapshot_service: AnalyticsSnapshotService,
+    pub assets: Arc<dyn AssetRepository>,
+    pub requests: Arc<dyn ServiceRequestRepository>,
+    pub service: ServiceRequestAppService,
+    pub work_orders: Arc<dyn WorkOrderRepository>,
+    pub work_order_service: WorkOrderAppService,
+    pub escalations: Arc<dyn EscalationRepository>,
+    pub escalation_service: EscalationAppService,
+    pub technicians: Arc<dyn TechnicianRepository>,
+    pub technician_service: TechnicianAppService,
+    pub audit: Arc<dyn AuditRepository>,
+    pub audit_service: AuditAppService,
+    pub sla_service: SlaAppService,
+    pub reporting_service: ReportingAppService,
+    pub analytics_snapshot_service: AnalyticsSnapshotAppService,
     pub jwt_secret: Arc<String>,
-    pub users: Arc<InMemoryUserStore>,
+    pub users: Arc<dyn UserStore>,
     /// RabbitMQ + Redis; если `None`, эндпоинты задач отвечают 503.
     pub jobs: Option<Arc<JobClient>>,
+    /// Кэш GET `/api/v1/*` в Redis (при наличии `REDIS_URL` вместе с RabbitMQ).
+    pub redis_cache: Option<Arc<RedisCache>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -203,7 +180,89 @@ pub struct RequestListQuery {
     pub priority: Option<String>,
 }
 
+fn api_cache_key(request: &Request<Body>) -> String {
+    let pq = request.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("");
+    let auth = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let mut hasher = Sha256::new();
+    hasher.update(pq.as_bytes());
+    hasher.update(b"|");
+    hasher.update(auth.as_bytes());
+    format!("cache:api:v1:{:x}", hasher.finalize())
+}
+
+fn should_cache_get_path(path: &str) -> bool {
+    path.starts_with("/api/v1/") && !path.starts_with("/api/v1/jobs")
+}
+
+async fn redis_http_cache_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+
+    let Some(ref cache) = state.redis_cache else {
+        return next.run(request).await;
+    };
+
+    if method != Method::GET {
+        cache.invalidate_api_cache().await;
+        return next.run(request).await;
+    }
+
+    let key_for_store = if should_cache_get_path(request.uri().path()) {
+        Some(api_cache_key(&request))
+    } else {
+        None
+    };
+
+    if let Some(ref k) = key_for_store {
+        if let Some(bytes) = cache.get(k).await {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-Cache", "HIT")
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "cache").into_response());
+        }
+    }
+
+    let res = next.run(request).await;
+
+    let Some(key) = key_for_store else {
+        return res;
+    };
+    if !res.status().is_success() {
+        return res;
+    }
+
+    let ct_json = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase().contains("json"))
+        .unwrap_or(false);
+    if !ct_json {
+        return res;
+    }
+
+    let (parts, body) = res.into_parts();
+    match body.collect().await {
+        Ok(col) => {
+            let bytes = col.to_bytes();
+            cache.set(&key, bytes.as_ref(), 60).await;
+            Response::from_parts(parts, Body::from(bytes))
+        }
+        Err(_) => Response::from_parts(parts, Body::empty()),
+    }
+}
+
 pub fn router(state: AppState) -> Router {
+    let cache_mw_state = state.clone();
     let public = Router::new()
         .route("/health", get(health))
         .route("/auth/login", post(login))
@@ -245,7 +304,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/jobs", post(enqueue_job))
         .route("/api/v1/jobs/:id", get(get_job_status))
-        .with_state(state);
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            cache_mw_state,
+            redis_http_cache_middleware,
+        ));
 
     Router::new()
         .merge(
@@ -279,7 +342,7 @@ async fn health() -> Json<HealthResponse> {
     )
 )]
 async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) -> impl IntoResponse {
-    let Some(user) = state.users.verify(&body.username, &body.password) else {
+    let Some(user) = state.users.verify(&body.username, &body.password).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {

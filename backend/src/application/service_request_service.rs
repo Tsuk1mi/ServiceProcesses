@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use crate::domain::entities::ServiceRequest;
@@ -10,30 +12,16 @@ use crate::ports::outbound::{
 };
 
 #[derive(Clone)]
-pub struct ServiceRequestAppService<A, R, S, P, E>
-where
-    A: AssetRepository,
-    R: ServiceRequestRepository,
-    S: SlaPolicyPort,
-    P: PriorityPolicyPort,
-    E: EventPublisherPort,
-{
-    pub assets: A,
-    pub requests: R,
-    pub sla: S,
-    pub priority: P,
-    pub events: E,
+pub struct ServiceRequestAppService {
+    pub assets: Arc<dyn AssetRepository>,
+    pub requests: Arc<dyn ServiceRequestRepository>,
+    pub sla: Arc<dyn SlaPolicyPort>,
+    pub priority: Arc<dyn PriorityPolicyPort>,
+    pub events: Arc<dyn EventPublisherPort>,
 }
 
 #[async_trait]
-impl<A, R, S, P, E> ServiceRequestUseCase for ServiceRequestAppService<A, R, S, P, E>
-where
-    A: AssetRepository + Send + Sync,
-    R: ServiceRequestRepository + Send + Sync,
-    S: SlaPolicyPort + Send + Sync,
-    P: PriorityPolicyPort + Send + Sync,
-    E: EventPublisherPort + Send + Sync,
-{
+impl ServiceRequestUseCase for ServiceRequestAppService {
     async fn create_request(&self, command: CreateRequestCommand, scope: DataScope) -> Result<(), DomainError> {
         let asset = self
             .assets

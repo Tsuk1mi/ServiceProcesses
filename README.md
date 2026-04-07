@@ -189,6 +189,8 @@ Backend — микросервисная архитектура на **Rust**.
 
 ![Image](https://miro.medium.com/1%2Ahg5YB0q7KVxKH-6sDcPWQQ.png)
 
+**Текущий стек в репозитории** (Docker Compose, Kubernetes, Helm, Postgres, Redis, RabbitMQ, воркеры) и потоки данных описаны в **[`docs/infrastructure-overview.md`](docs/infrastructure-overview.md)**.
+
 ---
 
 # 5.1 Terraform (IaC)

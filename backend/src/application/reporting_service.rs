@@ -1,23 +1,18 @@
+use std::sync::Arc;
+
 use crate::domain::analytics::{
-    DashboardSummary, SlaComplianceByPriorityItem, SlaComplianceSummary,
-    TechnicianWorkloadSummary,
+    DashboardSummary, SlaComplianceByPriorityItem, SlaComplianceSummary, TechnicianWorkloadSummary,
 };
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::AnalyticsQueryPort;
 
 #[derive(Clone)]
-pub struct ReportingAppService<A>
-where
-    A: AnalyticsQueryPort,
-{
-    pub analytics: A,
+pub struct ReportingAppService {
+    pub analytics: Arc<dyn AnalyticsQueryPort>,
 }
 
-impl<A> ReportingAppService<A>
-where
-    A: AnalyticsQueryPort + Send + Sync,
-{
+impl ReportingAppService {
     pub async fn dashboard_summary(
         &self,
         now_epoch: u64,
@@ -68,7 +63,7 @@ mod tests {
     use crate::auth::users::InMemoryUserStore;
 
     async fn service() -> (
-        ReportingAppService<InMemoryAnalyticsQuery>,
+        ReportingAppService,
         InMemoryRequestRepository,
         InMemoryWorkOrderRepository,
         InMemoryEscalationRepository,
@@ -80,12 +75,12 @@ mod tests {
         let escalations = InMemoryEscalationRepository::new();
         let technicians = InMemoryTechnicianRepository::new();
         let service = ReportingAppService {
-            analytics: InMemoryAnalyticsQuery {
-                requests: requests.clone(),
-                work_orders: work_orders.clone(),
-                escalations: escalations.clone(),
-                technicians: technicians.clone(),
-            },
+            analytics: std::sync::Arc::new(InMemoryAnalyticsQuery {
+                requests: std::sync::Arc::new(requests.clone()) as std::sync::Arc<dyn ServiceRequestRepository>,
+                work_orders: std::sync::Arc::new(work_orders.clone()) as std::sync::Arc<dyn WorkOrderRepository>,
+                escalations: std::sync::Arc::new(escalations.clone()) as std::sync::Arc<dyn EscalationRepository>,
+                technicians: std::sync::Arc::new(technicians.clone()) as std::sync::Arc<dyn TechnicianRepository>,
+            }),
         };
         (service, requests, work_orders, escalations, technicians)
     }

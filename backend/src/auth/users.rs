@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use uuid::Uuid;
 
@@ -67,18 +68,6 @@ impl InMemoryUserStore {
         Ok(Self { by_username })
     }
 
-    pub fn verify(&self, username: &str, password: &str) -> Option<AuthUser> {
-        let acc = self.by_username.get(username)?;
-        if verify(password, &acc.password_hash).ok()? {
-            Some(AuthUser {
-                sub: acc.id,
-                roles: acc.roles.clone(),
-            })
-        } else {
-            None
-        }
-    }
-
     pub fn demo_admin_id() -> Uuid {
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid")
     }
@@ -89,5 +78,33 @@ impl InMemoryUserStore {
 
     pub fn demo_technician_id() -> Uuid {
         Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid")
+    }
+}
+
+#[async_trait]
+pub trait UserStore: Send + Sync {
+    async fn verify(&self, username: &str, password: &str) -> Option<AuthUser>;
+}
+
+#[async_trait]
+impl UserStore for InMemoryUserStore {
+    async fn verify(&self, username: &str, password: &str) -> Option<AuthUser> {
+        let this = self.clone();
+        let u = username.to_string();
+        let p = password.to_string();
+        tokio::task::spawn_blocking(move || {
+            let acc = this.by_username.get(&u)?;
+            if verify(p, &acc.password_hash).ok()? {
+                Some(AuthUser {
+                    sub: acc.id,
+                    roles: acc.roles.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 }

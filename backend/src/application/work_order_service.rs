@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::domain::entities::WorkOrder;
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
@@ -6,26 +8,14 @@ use crate::ports::outbound::{
 };
 
 #[derive(Clone)]
-pub struct WorkOrderAppService<R, W, T, E>
-where
-    R: ServiceRequestRepository,
-    W: WorkOrderRepository,
-    T: TechnicianRepository,
-    E: EventPublisherPort,
-{
-    pub requests: R,
-    pub work_orders: W,
-    pub technicians: T,
-    pub events: E,
+pub struct WorkOrderAppService {
+    pub requests: Arc<dyn ServiceRequestRepository>,
+    pub work_orders: Arc<dyn WorkOrderRepository>,
+    pub technicians: Arc<dyn TechnicianRepository>,
+    pub events: Arc<dyn EventPublisherPort>,
 }
 
-impl<R, W, T, E> WorkOrderAppService<R, W, T, E>
-where
-    R: ServiceRequestRepository + Send + Sync,
-    W: WorkOrderRepository + Send + Sync,
-    T: TechnicianRepository + Send + Sync,
-    E: EventPublisherPort + Send + Sync,
-{
+impl WorkOrderAppService {
     pub async fn create_work_order(
         &self,
         id: String,

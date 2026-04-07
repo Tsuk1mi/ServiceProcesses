@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::domain::entities::{Escalation, ServiceRequest};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::EscalationState;
@@ -5,23 +7,13 @@ use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::{EscalationRepository, EventPublisherPort, ServiceRequestRepository};
 
 #[derive(Clone)]
-pub struct SlaAppService<R, ERepo, Event>
-where
-    R: ServiceRequestRepository,
-    ERepo: EscalationRepository,
-    Event: EventPublisherPort,
-{
-    pub requests: R,
-    pub escalations: ERepo,
-    pub events: Event,
+pub struct SlaAppService {
+    pub requests: Arc<dyn ServiceRequestRepository>,
+    pub escalations: Arc<dyn EscalationRepository>,
+    pub events: Arc<dyn EventPublisherPort>,
 }
 
-impl<R, ERepo, Event> SlaAppService<R, ERepo, Event>
-where
-    R: ServiceRequestRepository + Send + Sync,
-    ERepo: EscalationRepository + Send + Sync,
-    Event: EventPublisherPort + Send + Sync,
-{
+impl SlaAppService {
     pub async fn list_overdue_requests(
         &self,
         now_epoch: u64,
@@ -35,7 +27,6 @@ where
             .collect())
     }
 
-    /// Фоновый воркер: обрабатывает все заявки (глобальная область).
     pub async fn auto_escalate_overdue(
         &self,
         now_epoch: u64,

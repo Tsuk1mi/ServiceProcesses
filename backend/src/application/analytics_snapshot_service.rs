@@ -1,23 +1,17 @@
+use std::sync::Arc;
+
 use crate::domain::analytics::{AnalyticsSnapshot, DashboardSummary};
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::{AnalyticsQueryPort, AnalyticsSnapshotRepository};
 
 #[derive(Clone)]
-pub struct AnalyticsSnapshotAppService<Q, S>
-where
-    Q: AnalyticsQueryPort,
-    S: AnalyticsSnapshotRepository,
-{
-    pub analytics: Q,
-    pub snapshots: S,
+pub struct AnalyticsSnapshotAppService {
+    pub analytics: Arc<dyn AnalyticsQueryPort>,
+    pub snapshots: Arc<dyn AnalyticsSnapshotRepository>,
 }
 
-impl<Q, S> AnalyticsSnapshotAppService<Q, S>
-where
-    Q: AnalyticsQueryPort + Send + Sync,
-    S: AnalyticsSnapshotRepository + Send + Sync,
-{
+impl AnalyticsSnapshotAppService {
     /// Кэш дашборда только для глобального (admin) представления.
     pub async fn refresh(&self, now_epoch: u64) -> Result<(), DomainError> {
         let snapshot = self.compute_snapshot(now_epoch, DataScope::All).await?;
@@ -125,7 +119,10 @@ mod tests {
         InMemoryWorkOrderRepository,
     };
     use crate::ports::data_scope::DataScope;
-    use crate::ports::outbound::{ServiceRequestRepository, TechnicianRepository, WorkOrderRepository};
+    use crate::ports::outbound::{
+        AnalyticsSnapshotRepository, EscalationRepository, ServiceRequestRepository, TechnicianRepository,
+        WorkOrderRepository,
+    };
 
     #[tokio::test]
     async fn refresh_populates_cache() -> Result<(), DomainError> {
@@ -134,7 +131,8 @@ mod tests {
         let work_orders = InMemoryWorkOrderRepository::new();
         let escalations = InMemoryEscalationRepository::new();
         let technicians = InMemoryTechnicianRepository::new();
-        let snapshots = InMemoryAnalyticsSnapshotRepository::new();
+        let snapshots: std::sync::Arc<dyn AnalyticsSnapshotRepository> =
+            std::sync::Arc::new(InMemoryAnalyticsSnapshotRepository::new());
         let owner = InMemoryUserStore::demo_admin_id().to_string();
 
         technicians
@@ -168,14 +166,14 @@ mod tests {
         work_orders.save(wo).await?;
 
         let analytics_query = InMemoryAnalyticsQuery {
-            requests: requests.clone(),
-            work_orders: work_orders.clone(),
-            escalations: escalations.clone(),
-            technicians: technicians.clone(),
+            requests: std::sync::Arc::new(requests.clone()) as std::sync::Arc<dyn ServiceRequestRepository>,
+            work_orders: std::sync::Arc::new(work_orders.clone()) as std::sync::Arc<dyn WorkOrderRepository>,
+            escalations: std::sync::Arc::new(escalations.clone()) as std::sync::Arc<dyn EscalationRepository>,
+            technicians: std::sync::Arc::new(technicians.clone()) as std::sync::Arc<dyn TechnicianRepository>,
         };
 
         let svc = AnalyticsSnapshotAppService {
-            analytics: analytics_query,
+            analytics: std::sync::Arc::new(analytics_query),
             snapshots,
         };
 

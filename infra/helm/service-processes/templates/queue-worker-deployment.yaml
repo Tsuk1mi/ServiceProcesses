@@ -1,0 +1,31 @@
+{{- if .Values.queueWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue-worker
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.queueWorker.replicaCount }}
+  selector:
+    matchLabels:
+      app: queue-worker
+  template:
+    metadata:
+      labels:
+        app: queue-worker
+    spec:
+      containers:
+        - name: queue-worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: APP_MODE
+              value: queue_worker
+            - name: JOB_QUEUE_NAME
+              value: {{ .Values.config.JOB_QUEUE_NAME | quote }}
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: {{ .Values.secrets.existingSecretName }}
+{{- end }}

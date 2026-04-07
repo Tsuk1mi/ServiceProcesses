@@ -36,7 +36,15 @@ thiserror = "1.0"
 regex = "1"
 once_cell = "1.19"
 bytes = "1"
+http-body-util = "0.1"
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 # native-tls вместо rustls: иначе тянется ring (на части Windows-сборок падает cl.exe).
 lapin = { version = "2.5", default-features = false, features = ["native-tls"] }
 futures-util = "0.3"
+sea-orm = { version = "1.1", features = [
+    "runtime-tokio-native-tls",
+    "sqlx-postgres",
+    "macros",
+    "with-uuid",
+    "with-json",
+] }

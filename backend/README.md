@@ -20,8 +20,9 @@ cargo run
 
 | Переменная | Описание |
 |------------|----------|
+| `DATABASE_URL` | PostgreSQL (SeaORM). Если задан — **обязательны** `REDIS_URL` и `RABBITMQ_URL`: кэш GET `/api/v1/*` в Redis, доменные события в RabbitMQ (exchange `service_processes.events`), задачи `/api/v1/jobs`. Миграции: `migrations/001_init.sql`. Без `DATABASE_URL` — in-memory; Redis+Rabbit при этом опциональны (включают кэш, AMQP и задачи). |
 | `JWT_SECRET` | Секрет подписи JWT (в проде задать явно). |
-| `REDIS_URL` + `RABBITMQ_URL` | Вместе включают `POST/GET /api/v1/jobs`; иначе эти маршруты отвечают 503. |
+| `REDIS_URL` + `RABBITMQ_URL` | См. выше. В Docker задаются в `infra/docker/docker-compose.yml` (см. `infra/docker/.env.example` для локального `cargo run`). |
 | `JOB_QUEUE_NAME` | Очередь RabbitMQ (по умолчанию `service_jobs`). |
 | `WORKER_INTERVAL_SEC` | Интервал SLA-воркера (секунды). |
 | `RUST_LOG` | Например `info` или `info,tower_http=debug`. |

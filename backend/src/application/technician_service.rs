@@ -1,20 +1,16 @@
+use std::sync::Arc;
+
 use crate::domain::entities::Technician;
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::TechnicianRepository;
 
 #[derive(Clone)]
-pub struct TechnicianAppService<T>
-where
-    T: TechnicianRepository,
-{
-    pub technicians: T,
+pub struct TechnicianAppService {
+    pub technicians: Arc<dyn TechnicianRepository>,
 }
 
-impl<T> TechnicianAppService<T>
-where
-    T: TechnicianRepository + Send + Sync,
-{
+impl TechnicianAppService {
     pub async fn create(
         &self,
         id: String,

@@ -1,26 +1,18 @@
+use std::sync::Arc;
+
 use crate::domain::entities::Escalation;
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::{EscalationRepository, EventPublisherPort, ServiceRequestRepository};
 
 #[derive(Clone)]
-pub struct EscalationAppService<R, ERepo, Event>
-where
-    R: ServiceRequestRepository,
-    ERepo: EscalationRepository,
-    Event: EventPublisherPort,
-{
-    pub requests: R,
-    pub escalations: ERepo,
-    pub events: Event,
+pub struct EscalationAppService {
+    pub requests: Arc<dyn ServiceRequestRepository>,
+    pub escalations: Arc<dyn EscalationRepository>,
+    pub events: Arc<dyn EventPublisherPort>,
 }
 
-impl<R, ERepo, Event> EscalationAppService<R, ERepo, Event>
-where
-    R: ServiceRequestRepository + Send + Sync,
-    ERepo: EscalationRepository + Send + Sync,
-    Event: EventPublisherPort + Send + Sync,
-{
+impl EscalationAppService {
     pub async fn create_escalation(
         &self,
         escalation_id: String,

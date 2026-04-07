@@ -1,17 +1,19 @@
 # Серверный стек и фоновые задачи
 
+Полное описание инфраструктуры: **[infrastructure-overview.md](./infrastructure-overview.md)**.
+
 ## Сервисы в Docker
 
 Файл: `infra/docker/docker-compose.yml`.
 
 | Сервис        | Назначение |
 |---------------|------------|
-| `postgres`    | БД (подключение через `DATABASE_URL`; миграции SeaORM можно добавить отдельно). |
-| `redis`       | Статусы фоновых задач, ключ `job:status:{uuid}`. |
-| `rabbitmq`    | Очередь сообщений; UI управления: http://localhost:15672 (guest/guest). |
-| `backend`     | HTTP API на порту 8080. |
-| `sla-worker`  | `APP_MODE=worker` — периодическое SLA и снимок аналитики. |
-| `queue-worker`| `APP_MODE=queue_worker` — потребитель RabbitMQ, обновляет Redis. |
+| `postgres`    | БД: `DATABASE_URL=postgres://app:app@postgres:5432/service_processes` (миграции при старте API). |
+| `redis`       | Статусы задач `job:status:{uuid}`; кэш ответов GET `/api/v1/*` (`cache:api:v1:*`). |
+| `rabbitmq`    | Очередь `service_jobs`; topic exchange **`service_processes.events`** — все доменные события из приложения. UI: http://localhost:15672 (guest/guest). |
+| `backend`     | HTTP API :8080; при `DATABASE_URL` требует Redis+Rabbit. |
+| `sla-worker`  | `APP_MODE=worker` — SLA, аудит, снимок аналитики (те же URL к БД и брокерам). |
+| `queue-worker`| `APP_MODE=queue_worker` — потребитель очереди, обновляет Redis. |
 
 Запуск:
 
@@ -32,7 +34,7 @@ docker compose up -d --build
 | `RABBITMQ_URL`   | Например `amqp://guest:guest@127.0.0.1:5672/`. |
 | `JOB_QUEUE_NAME` | Имя очереди (по умолчанию `service_jobs`). |
 | `WORKER_INTERVAL_SEC` | Интервал SLA-воркера в секундах. |
-| `DATABASE_URL`   | Postgres (для будущего слоя SeaORM). |
+| `DATABASE_URL`   | Postgres (SeaORM). Если задан — обязательны `REDIS_URL` и `RABBITMQ_URL`. |
 | `RUST_LOG`       | Уровень логов, например `info,tower_http=debug` для трассировки HTTP. |
 
 ## Поток фоновой задачи
