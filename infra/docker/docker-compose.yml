@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Стек: API, SLA-воркер, воркер очереди (RabbitMQ), Postgres, Redis, RabbitMQ.
 # DATABASE_URL / REDIS_URL / RABBITMQ_URL задаются только через environment сервисов (см. .env.example).
 # Запуск из каталога infra/docker: docker compose up -d --build
@@ -39,6 +37,10 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: service-processes-rabbitmq
+    environment:
+      # guest разрешён только с localhost; из других контейнеров нужен отдельный пользователь.
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -61,7 +63,8 @@ services:
       APP_MODE: api
       JWT_SECRET: change-me-in-production
       REDIS_URL: redis://redis:6379
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      # vhost по умолчанию «/» в URI — %2F (иначе lapin шлёт пустой vhost).
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/%2F
       JOB_QUEUE_NAME: service_jobs
       DATABASE_URL: postgres://app:app@postgres:5432/service_processes
       RUST_LOG: info,tower_http=debug
@@ -83,7 +86,8 @@ services:
       APP_MODE: worker
       WORKER_INTERVAL_SEC: "30"
       REDIS_URL: redis://redis:6379
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      # vhost по умолчанию «/» в URI — %2F (иначе lapin шлёт пустой vhost).
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/%2F
       JOB_QUEUE_NAME: service_jobs
       DATABASE_URL: postgres://app:app@postgres:5432/service_processes
       RUST_LOG: info
@@ -104,7 +108,8 @@ services:
     environment:
       APP_MODE: queue_worker
       REDIS_URL: redis://redis:6379
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      # vhost по умолчанию «/» в URI — %2F (иначе lapin шлёт пустой vhost).
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/%2F
       JOB_QUEUE_NAME: service_jobs
       DATABASE_URL: postgres://app:app@postgres:5432/service_processes
       RUST_LOG: info
