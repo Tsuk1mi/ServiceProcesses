@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::application::rbac;
+use crate::auth::AuthUser;
 use crate::domain::entities::{Escalation, ServiceRequest};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::EscalationState;
@@ -29,9 +31,11 @@ impl SlaAppService {
 
     pub async fn auto_escalate_overdue(
         &self,
+        caller: &AuthUser,
         now_epoch: u64,
         reason: &str,
     ) -> Result<Vec<Escalation>, DomainError> {
+        rbac::require_any_role(caller, &["admin", "supervisor", "dispatcher"])?;
         let overdue = self.list_overdue_requests(now_epoch, DataScope::All).await?;
         let mut created = Vec::new();
         for req in overdue {
@@ -42,7 +46,7 @@ impl SlaAppService {
             }
             let esc_id = format!("esc-worker-{}-{}", now_epoch, req.id);
             let escalation = Escalation::new(esc_id, req.id.clone(), reason.to_string(), req.owner_user_id.clone())?;
-            self.escalations.save(escalation.clone()).await?;
+            self.escalations.save(escalation.clone(), DataScope::All).await?;
             self.events
                 .publish(
                     "service_request.escalated",

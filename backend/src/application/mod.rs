@@ -1,6 +1,7 @@
 pub mod audit_service;
 pub mod escalation_service;
 pub mod analytics_snapshot_service;
+pub mod rbac;
 pub mod reporting_service;
 pub mod service_request_service;
 pub mod sla_service;

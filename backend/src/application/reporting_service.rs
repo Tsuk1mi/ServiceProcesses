@@ -57,6 +57,7 @@ mod tests {
         InMemoryRequestRepository, InMemoryTechnicianRepository, InMemoryWorkOrderRepository,
     };
     use crate::ports::data_scope::DataScope;
+    const ALL: DataScope = DataScope::All;
     use crate::ports::outbound::{
         EscalationRepository, ServiceRequestRepository, TechnicianRepository, WorkOrderRepository,
     };
@@ -104,7 +105,7 @@ mod tests {
         )
         .expect("request");
         req_new.created_at_epoch_sec = 0;
-        requests.save(req_new).await.expect("save request");
+        requests.save(req_new, ALL).await.expect("save request");
 
         let mut req_progress = ServiceRequest::new(
             "req-progress".to_string(),
@@ -116,7 +117,7 @@ mod tests {
         )
         .expect("request");
         req_progress.status = RequestStatus::InProgress;
-        requests.save(req_progress).await.expect("save request");
+        requests.save(req_progress, ALL).await.expect("save request");
 
         let mut req_closed = ServiceRequest::new(
             "req-closed".to_string(),
@@ -128,12 +129,12 @@ mod tests {
         )
         .expect("request");
         req_closed.status = RequestStatus::Closed;
-        requests.save(req_closed).await.expect("save request");
+        requests.save(req_closed, ALL).await.expect("save request");
 
         let mut wo = WorkOrder::new("wo-1".to_string(), "req-progress".to_string(), owner.clone()).expect("wo");
         wo.assignee = Some("tech-1".to_string());
         wo.status = WorkOrderStatus::InProgress;
-        work_orders.save(wo).await.expect("save wo");
+        work_orders.save(wo, ALL).await.expect("save wo");
 
         let mut esc = Escalation::new(
             "esc-1".to_string(),
@@ -143,7 +144,7 @@ mod tests {
         )
         .expect("esc");
         esc.state = EscalationState::Open;
-        escalations.save(esc).await.expect("save esc");
+        escalations.save(esc, ALL).await.expect("save esc");
 
         let summary = svc.dashboard_summary(3601, scope_all()).await.expect("summary");
         assert_eq!(summary.total_requests, 3);
@@ -170,6 +171,7 @@ mod tests {
                     owner.clone(),
                 )
                 .expect("tech"),
+                ALL,
             )
             .await
             .expect("save tech");
@@ -182,6 +184,7 @@ mod tests {
                     owner.clone(),
                 )
                 .expect("tech"),
+                ALL,
             )
             .await
             .expect("save tech");
@@ -189,17 +192,17 @@ mod tests {
         let mut w1 = WorkOrder::new("wo-1".to_string(), "req-1".to_string(), owner.clone()).expect("wo");
         w1.assignee = Some("tech-1".to_string());
         w1.status = WorkOrderStatus::Assigned;
-        work_orders.save(w1).await.expect("save");
+        work_orders.save(w1, ALL).await.expect("save");
 
         let mut w2 = WorkOrder::new("wo-2".to_string(), "req-2".to_string(), owner.clone()).expect("wo");
         w2.assignee = Some("tech-1".to_string());
         w2.status = WorkOrderStatus::Completed;
-        work_orders.save(w2).await.expect("save");
+        work_orders.save(w2, ALL).await.expect("save");
 
         let mut w3 = WorkOrder::new("wo-3".to_string(), "req-3".to_string(), owner.clone()).expect("wo");
         w3.assignee = Some("tech-2".to_string());
         w3.status = WorkOrderStatus::InProgress;
-        work_orders.save(w3).await.expect("save");
+        work_orders.save(w3, ALL).await.expect("save");
 
         let items = svc
             .technician_workload_summary(scope_all())
@@ -230,7 +233,7 @@ mod tests {
         )
         .expect("request");
         open_overdue.created_at_epoch_sec = 0;
-        requests.save(open_overdue).await.expect("save request");
+        requests.save(open_overdue, ALL).await.expect("save request");
 
         let mut open_ok = ServiceRequest::new(
             "req-open-ok".to_string(),
@@ -243,7 +246,7 @@ mod tests {
         .expect("request");
         open_ok.created_at_epoch_sec = 3_590;
         open_ok.status = RequestStatus::InProgress;
-        requests.save(open_ok).await.expect("save request");
+        requests.save(open_ok, ALL).await.expect("save request");
 
         let mut closed_overdue = ServiceRequest::new(
             "req-closed-overdue".to_string(),
@@ -256,7 +259,7 @@ mod tests {
         .expect("request");
         closed_overdue.created_at_epoch_sec = 0;
         closed_overdue.status = RequestStatus::Closed;
-        requests.save(closed_overdue).await.expect("save request");
+        requests.save(closed_overdue, ALL).await.expect("save request");
 
         let summary = svc.sla_compliance_summary(3_601, scope_all()).await.expect("sla summary");
         assert_eq!(summary.total_open_requests, 2);
@@ -280,7 +283,7 @@ mod tests {
         )
         .expect("request");
         req_high.created_at_epoch_sec = 0;
-        requests.save(req_high).await.expect("save request");
+        requests.save(req_high, ALL).await.expect("save request");
 
         let mut req_low = ServiceRequest::new(
             "req-low".to_string(),
@@ -293,7 +296,7 @@ mod tests {
         .expect("request");
         req_low.created_at_epoch_sec = 30;
         req_low.status = RequestStatus::Planned;
-        requests.save(req_low).await.expect("save request");
+        requests.save(req_low, ALL).await.expect("save request");
 
         let items = svc
             .sla_compliance_by_priority_summary(3_601, scope_all())

@@ -119,6 +119,8 @@ mod tests {
         InMemoryWorkOrderRepository,
     };
     use crate::ports::data_scope::DataScope;
+
+    const ALL: DataScope = DataScope::All;
     use crate::ports::outbound::{
         AnalyticsSnapshotRepository, EscalationRepository, ServiceRequestRepository, TechnicianRepository,
         WorkOrderRepository,
@@ -144,6 +146,7 @@ mod tests {
                     owner.clone(),
                 )
                 .unwrap(),
+                ALL,
             )
             .await?;
 
@@ -158,12 +161,12 @@ mod tests {
         .unwrap();
         req.status = RequestStatus::InProgress;
         req.created_at_epoch_sec = 0;
-        requests.save(req).await?;
+        requests.save(req, ALL).await?;
 
         let mut wo = WorkOrder::new("wo-1".to_string(), "req-1".to_string(), owner.clone()).unwrap();
         wo.assignee = Some("tech-1".to_string());
         wo.status = WorkOrderStatus::InProgress;
-        work_orders.save(wo).await?;
+        work_orders.save(wo, ALL).await?;
 
         let analytics_query = InMemoryAnalyticsQuery {
             requests: std::sync::Arc::new(requests.clone()) as std::sync::Arc<dyn ServiceRequestRepository>,

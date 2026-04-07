@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use service_processes_core::application::analytics_snapshot_service::AnalyticsSnapshotAppService;
+use service_processes_core::application::rbac;
 use service_processes_core::application::audit_service::AuditAppService;
 use service_processes_core::application::escalation_service::EscalationAppService;
 use service_processes_core::application::reporting_service::ReportingAppService;
@@ -26,6 +27,7 @@ use service_processes_core::infrastructure::postgres::{
 };
 use service_processes_core::infrastructure::redis_cache::RedisCache;
 use service_processes_core::interfaces::http::{router, AppState};
+use service_processes_core::ports::data_scope::DataScope;
 use service_processes_core::ports::outbound::{
     AnalyticsSnapshotRepository, AssetRepository, AuditRepository, EscalationRepository, EventPublisherPort,
     ServiceRequestRepository, TechnicianRepository, WorkOrderRepository,
@@ -91,7 +93,11 @@ async fn run_sla_worker() -> Result<(), DomainError> {
     loop {
         let created = state
             .sla_service
-            .auto_escalate_overdue(now_epoch(), "Automatic SLA overdue escalation by worker")
+            .auto_escalate_overdue(
+                &rbac::system_admin_actor(),
+                now_epoch(),
+                "Automatic SLA overdue escalation by worker",
+            )
             .await?;
         for esc in created {
             let audit_owner = esc.owner_user_id.clone();
@@ -135,13 +141,16 @@ async fn build_state_memory() -> Result<AppState, DomainError> {
     let assets_mem = Arc::new(InMemoryAssetRepository::new());
     let assets: Arc<dyn AssetRepository> = assets_mem.clone();
     assets_mem
-        .save(Asset::new(
-            "asset-1".to_string(),
-            "building".to_string(),
-            "Склад N1".to_string(),
-            "Москва".to_string(),
-            admin_owner.clone(),
-        )?)
+        .save(
+            Asset::new(
+                "asset-1".to_string(),
+                "building".to_string(),
+                "Склад N1".to_string(),
+                "Москва".to_string(),
+                admin_owner.clone(),
+            )?,
+            DataScope::All,
+        )
         .await?;
 
     let requests = Arc::new(InMemoryRequestRepository::new(Arc::clone(&assets_mem)));
@@ -156,12 +165,15 @@ async fn build_state_memory() -> Result<AppState, DomainError> {
     let audit_dyn: Arc<dyn AuditRepository> = audit.clone();
 
     technicians
-        .save(Technician::new(
-            tech_id.clone(),
-            "Иван Иванов".to_string(),
-            vec!["electrical".to_string(), "inspection".to_string()],
-            admin_owner.clone(),
-        )?)
+        .save(
+            Technician::new(
+                tech_id.clone(),
+                "Иван Иванов".to_string(),
+                vec!["electrical".to_string(), "inspection".to_string()],
+                admin_owner.clone(),
+            )?,
+            DataScope::All,
+        )
         .await?;
 
     let queue_name = env::var("JOB_QUEUE_NAME").unwrap_or_else(|_| "service_jobs".to_string());

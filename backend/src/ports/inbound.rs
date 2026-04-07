@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use crate::auth::AuthUser;
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::RequestStatus;
 use crate::ports::data_scope::DataScope;
@@ -13,9 +14,15 @@ pub struct CreateRequestCommand {
 
 #[async_trait]
 pub trait ServiceRequestUseCase: Send + Sync {
-    async fn create_request(&self, command: CreateRequestCommand, scope: DataScope) -> Result<(), DomainError>;
+    async fn create_request(
+        &self,
+        caller: &AuthUser,
+        command: CreateRequestCommand,
+        scope: DataScope,
+    ) -> Result<(), DomainError>;
     async fn update_status(
         &self,
+        caller: &AuthUser,
         request_id: &str,
         next: RequestStatus,
         scope: DataScope,

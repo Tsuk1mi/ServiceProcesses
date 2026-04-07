@@ -142,6 +142,12 @@ pub struct CreateTechnicianRequest {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+pub struct AddRoleRequest {
+    pub subject_id: Uuid,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct EnqueueJobRequest {
     /// `echo` или `simulate_slow`
     pub kind: String,
@@ -204,6 +210,11 @@ async fn redis_http_cache_middleware(
     next: Next,
 ) -> Response {
     let method = request.method().clone();
+    tracing::info!(
+        method = %method,
+        path = %request.uri().path(),
+        "incoming http request"
+    );
 
     let Some(ref cache) = state.redis_cache else {
         return next.run(request).await;
@@ -302,6 +313,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/dashboard/technicians/workload",
             get(get_technician_workload_summary),
         )
+        .route("/api/v1/admin/roles", post(admin_add_role))
         .route("/api/v1/jobs", post(enqueue_job))
         .route("/api/v1/jobs/:id", get(get_job_status))
         .with_state(state.clone())
@@ -374,12 +386,40 @@ async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) ->
 
 #[utoipa::path(
     post,
+    path = "/api/v1/admin/roles",
+    tag = "admin",
+    security(("bearer" = [])),
+    request_body = AddRoleRequest,
+    responses(
+        (status = 200, description = "Роль добавлена (или уже была)"),
+        (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
+        (status = 404, body = ErrorResponse)
+    )
+)]
+async fn admin_add_role(
+    State(state): State<AppState>,
+    auth: JwtAuth,
+    Json(body): Json<AddRoleRequest>,
+) -> impl IntoResponse {
+    if let Err(r) = require_roles(&auth, &["admin"]) {
+        return r;
+    }
+    match state.users.add_role_for_subject(body.subject_id, &body.role).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err(e) => domain_error_to_response(e),
+    }
+}
+
+#[utoipa::path(
+    post,
     path = "/api/v1/jobs",
     tag = "jobs",
     security(("bearer" = [])),
     request_body = EnqueueJobRequest,
     responses(
         (status = 202, description = "Задача в очереди RabbitMQ, статус в Redis", body = EnqueueJobResponse),
+        (status = 400, body = ErrorResponse),
         (status = 401, body = ErrorResponse),
         (status = 503, body = ErrorResponse)
     )
@@ -389,6 +429,16 @@ async fn enqueue_job(
     auth: JwtAuth,
     Json(body): Json<EnqueueJobRequest>,
 ) -> impl IntoResponse {
+    let k = body.kind.as_str();
+    if k != "echo" && k != "simulate_slow" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                message: "разрешены только kind: echo, simulate_slow".to_string(),
+            }),
+        )
+            .into_response();
+    }
     let Some(ref jobs) = state.jobs else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -502,7 +552,7 @@ async fn create_asset(
     let id = format!("asset-{}", Uuid::new_v4().simple());
     let owner = auth.sub.to_string();
     match Asset::new(id, body.kind, body.title, body.location, owner.clone()) {
-        Ok(asset) => match state.assets.save(asset.clone()).await {
+        Ok(asset) => match state.assets.save(asset.clone(), auth.data_scope()).await {
             Ok(()) => {
                 let _ = state
                     .audit_service
@@ -596,7 +646,11 @@ async fn create_request(
         description: body.description,
     };
 
-    match state.service.create_request(command.clone(), scope.clone()).await {
+    match state
+        .service
+        .create_request(&auth.0, command.clone(), scope.clone())
+        .await
+    {
         Ok(()) => {
             let audit_owner = state
                 .assets
@@ -753,7 +807,7 @@ async fn update_request_status(
         _ => auth.sub.to_string(),
     };
 
-    match state.service.update_status(&id, next, scope).await {
+    match state.service.update_status(&auth.0, &id, next, scope).await {
         Ok(()) => {
             let _ = state
                 .audit_service
@@ -807,7 +861,7 @@ async fn create_work_order(
     let id = format!("wo-{}", Uuid::new_v4().simple());
     match state
         .work_order_service
-        .create_work_order(id, body.request_id.clone(), scope.clone())
+        .create_work_order(&auth.0, id, body.request_id.clone(), scope.clone())
         .await
     {
         Ok(order) => {
@@ -923,7 +977,11 @@ async fn assign_work_order(
         return r;
     }
     let scope = auth.data_scope();
-    match state.work_order_service.assign(&id, body.assignee, scope.clone()).await {
+    match state
+        .work_order_service
+        .assign(&auth.0, &id, body.assignee, scope.clone())
+        .await
+    {
         Ok(order) => {
             let audit_owner = order.owner_user_id.clone();
             let _ = state
@@ -979,7 +1037,7 @@ async fn start_work_order(
         let actor_id = auth.sub.to_string();
         match state
             .work_order_service
-            .start_by_actor(&id, &actor_id, scope.clone())
+            .start_by_actor(&auth.0, &id, &actor_id, scope.clone())
             .await
         {
             Ok(order) => {
@@ -1001,7 +1059,7 @@ async fn start_work_order(
             Err(e) => domain_error_to_response(e),
         }
     } else {
-        match state.work_order_service.start(&id, scope.clone()).await {
+        match state.work_order_service.start(&auth.0, &id, scope.clone()).await {
             Ok(order) => {
                 let audit_owner = order.owner_user_id.clone();
                 let _ = state
@@ -1054,7 +1112,7 @@ async fn complete_work_order(
         let actor_id = auth.sub.to_string();
         match state
             .work_order_service
-            .complete_by_actor(&id, &actor_id, scope.clone())
+            .complete_by_actor(&auth.0, &id, &actor_id, scope.clone())
             .await
         {
             Ok(order) => {
@@ -1076,7 +1134,7 @@ async fn complete_work_order(
             Err(e) => domain_error_to_response(e),
         }
     } else {
-        match state.work_order_service.complete(&id, scope.clone()).await {
+        match state.work_order_service.complete(&auth.0, &id, scope.clone()).await {
             Ok(order) => {
                 let audit_owner = order.owner_user_id.clone();
                 let _ = state
@@ -1193,7 +1251,7 @@ async fn create_escalation(
     let id = format!("esc-{}", Uuid::new_v4().simple());
     match state
         .escalation_service
-        .create_escalation(id, body.request_id, body.reason, scope.clone())
+        .create_escalation(&auth.0, id, body.request_id, body.reason, scope.clone())
         .await
     {
         Ok(escalation) => {
@@ -1307,7 +1365,7 @@ async fn resolve_escalation(
         return r;
     }
     let scope = auth.data_scope();
-    match state.escalation_service.resolve(&id, scope.clone()).await {
+    match state.escalation_service.resolve(&auth.0, &id, scope.clone()).await {
         Ok(item) => {
             let audit_owner = item.owner_user_id.clone();
             let _ = state
@@ -1351,7 +1409,7 @@ async fn escalate_overdue_requests(
     }
     let created = match state
         .sla_service
-        .auto_escalate_overdue(now_epoch(), "Automatic SLA overdue escalation")
+        .auto_escalate_overdue(&auth.0, now_epoch(), "Automatic SLA overdue escalation")
         .await
     {
         Ok(v) => v,
@@ -1410,7 +1468,7 @@ async fn create_technician(
     let owner = auth.sub.to_string();
     match state
         .technician_service
-        .create(id, body.full_name, body.skills, owner.clone())
+        .create(&auth.0, id, body.full_name, body.skills, owner.clone())
         .await
     {
         Ok(item) => {
@@ -1682,6 +1740,7 @@ impl Modify for SecurityAddon {
     paths(
         health,
         login,
+        admin_add_role,
         enqueue_job,
         get_job_status,
         create_asset,
@@ -1714,6 +1773,7 @@ impl Modify for SecurityAddon {
     tags(
         (name = "health", description = "Проверка доступности"),
         (name = "auth", description = "JWT: вход и выдача токена"),
+        (name = "admin", description = "Администрирование (RBAC в БД)"),
         (name = "assets", description = "Активы"),
         (name = "requests", description = "Сервисные заявки"),
         (name = "work-orders", description = "Наряды на работы"),
@@ -1753,6 +1813,7 @@ fn apply_pagination<T>(items: Vec<T>, limit: Option<usize>, offset: Option<usize
 }
 
 fn domain_error_to_response(error: DomainError) -> axum::response::Response {
+    tracing::warn!(error = %error, "domain error mapped to http response");
     let status = match error {
         DomainError::NotFound(_) => StatusCode::NOT_FOUND,
         DomainError::InvalidTransition => StatusCode::CONFLICT,

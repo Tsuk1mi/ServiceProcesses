@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::domain::entities::{Asset, Technician};
 use crate::domain::errors::DomainError;
+use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::{AssetRepository, TechnicianRepository};
 use crate::infrastructure::postgres::entity::{app_user, app_user_role, asset};
 use crate::infrastructure::postgres::repos::db_err;
@@ -105,7 +106,7 @@ pub async fn seed_demo_domain_if_empty(db: &DatabaseConnection, admin_owner: Str
         admin_owner.clone(),
     )?;
     crate::infrastructure::postgres::repos::PgAssetRepository::new(db.clone())
-        .save(a)
+        .save(a, DataScope::All)
         .await?;
 
     let tech_id = Uuid::parse_str("00000000-0000-0000-0000-000000000003")
@@ -118,7 +119,7 @@ pub async fn seed_demo_domain_if_empty(db: &DatabaseConnection, admin_owner: Str
         admin_owner,
     )?;
     crate::infrastructure::postgres::repos::PgTechnicianRepository::new(db.clone())
-        .save(t)
+        .save(t, DataScope::All)
         .await?;
 
     Ok(())

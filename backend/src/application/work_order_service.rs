@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::application::rbac;
+use crate::auth::AuthUser;
 use crate::domain::entities::WorkOrder;
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
@@ -18,10 +20,12 @@ pub struct WorkOrderAppService {
 impl WorkOrderAppService {
     pub async fn create_work_order(
         &self,
+        caller: &AuthUser,
         id: String,
         request_id: String,
         scope: DataScope,
     ) -> Result<WorkOrder, DomainError> {
+        rbac::require_any_role(caller, &["admin", "dispatcher", "supervisor"])?;
         let request = self
             .requests
             .get_by_id(&request_id, scope.clone())
@@ -29,7 +33,7 @@ impl WorkOrderAppService {
             .ok_or(DomainError::NotFound("service_request"))?;
 
         let work_order = WorkOrder::new(id, request_id, request.owner_user_id)?;
-        self.work_orders.save(work_order.clone()).await?;
+        self.work_orders.save(work_order.clone(), scope.clone()).await?;
         self.events
             .publish(
                 "work_order.created",
@@ -50,10 +54,12 @@ impl WorkOrderAppService {
 
     pub async fn assign(
         &self,
+        caller: &AuthUser,
         work_order_id: &str,
         assignee: String,
         scope: DataScope,
     ) -> Result<WorkOrder, DomainError> {
+        rbac::require_any_role(caller, &["admin", "dispatcher", "supervisor"])?;
         let _technician = self
             .technicians
             .get_by_id(&assignee, scope.clone())
@@ -66,7 +72,7 @@ impl WorkOrderAppService {
             .await?
             .ok_or(DomainError::NotFound("work_order"))?;
         work_order.assign(assignee)?;
-        self.work_orders.update(work_order.clone()).await?;
+        self.work_orders.update(work_order.clone(), scope.clone()).await?;
         self.events
             .publish(
                 "work_order.assigned",
@@ -80,14 +86,15 @@ impl WorkOrderAppService {
         Ok(work_order)
     }
 
-    pub async fn start(&self, work_order_id: &str, scope: DataScope) -> Result<WorkOrder, DomainError> {
+    pub async fn start(&self, caller: &AuthUser, work_order_id: &str, scope: DataScope) -> Result<WorkOrder, DomainError> {
+        rbac::require_any_role(caller, &["admin", "technician", "dispatcher", "supervisor"])?;
         let mut work_order = self
             .work_orders
             .get_by_id(work_order_id, scope.clone())
             .await?
             .ok_or(DomainError::NotFound("work_order"))?;
         work_order.start()?;
-        self.work_orders.update(work_order.clone()).await?;
+        self.work_orders.update(work_order.clone(), scope.clone()).await?;
         self.events
             .publish("work_order.started", &format!("id={}", work_order.id))
             .await?;
@@ -96,10 +103,12 @@ impl WorkOrderAppService {
 
     pub async fn start_by_actor(
         &self,
+        caller: &AuthUser,
         work_order_id: &str,
         actor_id: &str,
         scope: DataScope,
     ) -> Result<WorkOrder, DomainError> {
+        rbac::require_any_role(caller, &["admin", "technician", "dispatcher", "supervisor"])?;
         let mut work_order = self
             .work_orders
             .get_by_id(work_order_id, scope.clone())
@@ -115,21 +124,22 @@ impl WorkOrderAppService {
             ));
         }
         work_order.start()?;
-        self.work_orders.update(work_order.clone()).await?;
+        self.work_orders.update(work_order.clone(), scope.clone()).await?;
         self.events
             .publish("work_order.started", &format!("id={}", work_order.id))
             .await?;
         Ok(work_order)
     }
 
-    pub async fn complete(&self, work_order_id: &str, scope: DataScope) -> Result<WorkOrder, DomainError> {
+    pub async fn complete(&self, caller: &AuthUser, work_order_id: &str, scope: DataScope) -> Result<WorkOrder, DomainError> {
+        rbac::require_any_role(caller, &["admin", "technician", "dispatcher", "supervisor"])?;
         let mut work_order = self
             .work_orders
             .get_by_id(work_order_id, scope.clone())
             .await?
             .ok_or(DomainError::NotFound("work_order"))?;
         work_order.complete()?;
-        self.work_orders.update(work_order.clone()).await?;
+        self.work_orders.update(work_order.clone(), scope.clone()).await?;
         self.events
             .publish("work_order.completed", &format!("id={}", work_order.id))
             .await?;
@@ -138,10 +148,12 @@ impl WorkOrderAppService {
 
     pub async fn complete_by_actor(
         &self,
+        caller: &AuthUser,
         work_order_id: &str,
         actor_id: &str,
         scope: DataScope,
     ) -> Result<WorkOrder, DomainError> {
+        rbac::require_any_role(caller, &["admin", "technician", "dispatcher", "supervisor"])?;
         let mut work_order = self
             .work_orders
             .get_by_id(work_order_id, scope.clone())
@@ -157,7 +169,7 @@ impl WorkOrderAppService {
             ));
         }
         work_order.complete()?;
-        self.work_orders.update(work_order.clone()).await?;
+        self.work_orders.update(work_order.clone(), scope.clone()).await?;
         self.events
             .publish("work_order.completed", &format!("id={}", work_order.id))
             .await?;

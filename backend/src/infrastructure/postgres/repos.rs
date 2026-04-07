@@ -23,6 +23,30 @@ pub(crate) fn db_err(_: sea_orm::DbErr) -> DomainError {
     DomainError::EmptyField("database")
 }
 
+fn enforce_entity_save(
+    existing_owner: Option<&str>,
+    new_owner: &str,
+    actor_scope: &DataScope,
+) -> Result<(), DomainError> {
+    match actor_scope {
+        DataScope::All => Ok(()),
+        DataScope::Owner(u) => {
+            let sid = u.to_string();
+            if new_owner != sid {
+                return Err(DomainError::Forbidden(
+                    "entity owner must match current user for non-admin",
+                ));
+            }
+            if let Some(ex) = existing_owner {
+                if ex != sid {
+                    return Err(DomainError::Forbidden("cannot modify another user's resource"));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn asset_state_to_str(s: AssetState) -> &'static str {
     match s {
         AssetState::Active => "Active",
@@ -200,7 +224,10 @@ impl PgAssetRepository {
 
 #[async_trait]
 impl AssetRepository for PgAssetRepository {
-    async fn save(&self, a: Asset) -> Result<(), DomainError> {
+    async fn save(&self, a: Asset, actor_scope: DataScope) -> Result<(), DomainError> {
+        let existing = asset::Entity::find_by_id(&a.id).one(&self.db).await.map_err(db_err)?;
+        let ex_owner = existing.as_ref().map(|m| m.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &a.owner_user_id, &actor_scope)?;
         let am = asset::ActiveModel {
             id: Set(a.id),
             kind: Set(a.kind),
@@ -259,7 +286,10 @@ impl PgServiceRequestRepository {
 
 #[async_trait]
 impl ServiceRequestRepository for PgServiceRequestRepository {
-    async fn save(&self, r: ServiceRequest) -> Result<(), DomainError> {
+    async fn save(&self, r: ServiceRequest, actor_scope: DataScope) -> Result<(), DomainError> {
+        let existing = service_request::Entity::find_by_id(&r.id).one(&self.db).await.map_err(db_err)?;
+        let ex_owner = existing.as_ref().map(|m| m.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &r.owner_user_id, &actor_scope)?;
         let am = service_request::ActiveModel {
             id: Set(r.id),
             asset_id: Set(r.asset_id),
@@ -312,8 +342,8 @@ impl ServiceRequestRepository for PgServiceRequestRepository {
         rows.into_iter().map(service_request_from_model).collect()
     }
 
-    async fn update(&self, r: ServiceRequest) -> Result<(), DomainError> {
-        self.save(r).await
+    async fn update(&self, r: ServiceRequest, actor_scope: DataScope) -> Result<(), DomainError> {
+        self.save(r, actor_scope).await
     }
 
     async fn list_with_assets(
@@ -356,7 +386,10 @@ impl PgWorkOrderRepository {
 
 #[async_trait]
 impl WorkOrderRepository for PgWorkOrderRepository {
-    async fn save(&self, w: WorkOrder) -> Result<(), DomainError> {
+    async fn save(&self, w: WorkOrder, actor_scope: DataScope) -> Result<(), DomainError> {
+        let existing = work_order::Entity::find_by_id(&w.id).one(&self.db).await.map_err(db_err)?;
+        let ex_owner = existing.as_ref().map(|m| m.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &w.owner_user_id, &actor_scope)?;
         let am = work_order::ActiveModel {
             id: Set(w.id),
             request_id: Set(w.request_id),
@@ -412,8 +445,8 @@ impl WorkOrderRepository for PgWorkOrderRepository {
         rows.into_iter().map(work_order_from_model).collect()
     }
 
-    async fn update(&self, w: WorkOrder) -> Result<(), DomainError> {
-        self.save(w).await
+    async fn update(&self, w: WorkOrder, actor_scope: DataScope) -> Result<(), DomainError> {
+        self.save(w, actor_scope).await
     }
 }
 
@@ -430,7 +463,10 @@ impl PgEscalationRepository {
 
 #[async_trait]
 impl EscalationRepository for PgEscalationRepository {
-    async fn save(&self, e: Escalation) -> Result<(), DomainError> {
+    async fn save(&self, e: Escalation, actor_scope: DataScope) -> Result<(), DomainError> {
+        let existing = escalation::Entity::find_by_id(&e.id).one(&self.db).await.map_err(db_err)?;
+        let ex_owner = existing.as_ref().map(|m| m.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &e.owner_user_id, &actor_scope)?;
         let am = escalation::ActiveModel {
             id: Set(e.id),
             request_id: Set(e.request_id),
@@ -486,8 +522,8 @@ impl EscalationRepository for PgEscalationRepository {
         rows.into_iter().map(escalation_from_model).collect()
     }
 
-    async fn update(&self, e: Escalation) -> Result<(), DomainError> {
-        self.save(e).await
+    async fn update(&self, e: Escalation, actor_scope: DataScope) -> Result<(), DomainError> {
+        self.save(e, actor_scope).await
     }
 }
 
@@ -504,7 +540,10 @@ impl PgTechnicianRepository {
 
 #[async_trait]
 impl TechnicianRepository for PgTechnicianRepository {
-    async fn save(&self, t: Technician) -> Result<(), DomainError> {
+    async fn save(&self, t: Technician, actor_scope: DataScope) -> Result<(), DomainError> {
+        let existing = technician::Entity::find_by_id(&t.id).one(&self.db).await.map_err(db_err)?;
+        let ex_owner = existing.as_ref().map(|m| m.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &t.owner_user_id, &actor_scope)?;
         let skills = serde_json::to_value(&t.skills).map_err(|_| DomainError::EmptyField("skills"))?;
         let am = technician::ActiveModel {
             id: Set(t.id),

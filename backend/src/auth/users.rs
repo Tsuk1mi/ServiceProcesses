@@ -84,6 +84,11 @@ impl InMemoryUserStore {
 #[async_trait]
 pub trait UserStore: Send + Sync {
     async fn verify(&self, username: &str, password: &str) -> Option<AuthUser>;
+
+    /// Назначить роль по `subject_id` (UUID субъекта в JWT). Реализовано для PostgreSQL.
+    async fn add_role_for_subject(&self, _subject_id: Uuid, _role: &str) -> Result<(), DomainError> {
+        Err(DomainError::EmptyField("add_role_for_subject not supported"))
+    }
 }
 
 #[async_trait]
@@ -106,5 +111,9 @@ impl UserStore for InMemoryUserStore {
         .await
         .ok()
         .flatten()
+    }
+
+    async fn add_role_for_subject(&self, _subject_id: Uuid, _role: &str) -> Result<(), DomainError> {
+        Err(DomainError::Forbidden("in-memory store: use PostgreSQL for role management"))
     }
 }

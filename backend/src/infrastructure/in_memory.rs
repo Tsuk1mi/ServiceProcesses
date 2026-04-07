@@ -25,6 +25,30 @@ fn scope_matches(owner_user_id: &str, scope: &DataScope) -> bool {
     }
 }
 
+fn enforce_entity_save(
+    existing_owner: Option<&str>,
+    new_owner: &str,
+    actor_scope: &DataScope,
+) -> Result<(), DomainError> {
+    match actor_scope {
+        DataScope::All => Ok(()),
+        DataScope::Owner(u) => {
+            let sid = u.to_string();
+            if new_owner != sid {
+                return Err(DomainError::Forbidden(
+                    "entity owner must match current user for non-admin",
+                ));
+            }
+            if let Some(ex) = existing_owner {
+                if ex != sid {
+                    return Err(DomainError::Forbidden("cannot modify another user's resource"));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct InMemoryAssetRepository {
     data: Arc<Mutex<HashMap<String, Asset>>>,
@@ -40,8 +64,10 @@ impl InMemoryAssetRepository {
 
 #[async_trait]
 impl AssetRepository for InMemoryAssetRepository {
-    async fn save(&self, asset: Asset) -> Result<(), DomainError> {
+    async fn save(&self, asset: Asset, actor_scope: DataScope) -> Result<(), DomainError> {
         let mut g = self.data.lock().await;
+        let ex_owner = g.get(&asset.id).map(|a| a.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &asset.owner_user_id, &actor_scope)?;
         g.insert(asset.id.clone(), asset);
         Ok(())
     }
@@ -78,8 +104,10 @@ impl InMemoryRequestRepository {
 
 #[async_trait]
 impl ServiceRequestRepository for InMemoryRequestRepository {
-    async fn save(&self, request: ServiceRequest) -> Result<(), DomainError> {
+    async fn save(&self, request: ServiceRequest, actor_scope: DataScope) -> Result<(), DomainError> {
         let mut g = self.data.lock().await;
+        let ex_owner = g.get(&request.id).map(|r| r.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &request.owner_user_id, &actor_scope)?;
         g.insert(request.id.clone(), request);
         Ok(())
     }
@@ -98,10 +126,8 @@ impl ServiceRequestRepository for InMemoryRequestRepository {
             .collect())
     }
 
-    async fn update(&self, request: ServiceRequest) -> Result<(), DomainError> {
-        let mut g = self.data.lock().await;
-        g.insert(request.id.clone(), request);
-        Ok(())
+    async fn update(&self, request: ServiceRequest, actor_scope: DataScope) -> Result<(), DomainError> {
+        self.save(request, actor_scope).await
     }
 
     async fn list_with_assets(
@@ -133,8 +159,10 @@ impl InMemoryWorkOrderRepository {
 
 #[async_trait]
 impl WorkOrderRepository for InMemoryWorkOrderRepository {
-    async fn save(&self, work_order: WorkOrder) -> Result<(), DomainError> {
+    async fn save(&self, work_order: WorkOrder, actor_scope: DataScope) -> Result<(), DomainError> {
         let mut g = self.data.lock().await;
+        let ex_owner = g.get(&work_order.id).map(|w| w.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &work_order.owner_user_id, &actor_scope)?;
         g.insert(work_order.id.clone(), work_order);
         Ok(())
     }
@@ -165,10 +193,8 @@ impl WorkOrderRepository for InMemoryWorkOrderRepository {
             .collect())
     }
 
-    async fn update(&self, work_order: WorkOrder) -> Result<(), DomainError> {
-        let mut g = self.data.lock().await;
-        g.insert(work_order.id.clone(), work_order);
-        Ok(())
+    async fn update(&self, work_order: WorkOrder, actor_scope: DataScope) -> Result<(), DomainError> {
+        self.save(work_order, actor_scope).await
     }
 }
 
@@ -187,8 +213,10 @@ impl InMemoryEscalationRepository {
 
 #[async_trait]
 impl EscalationRepository for InMemoryEscalationRepository {
-    async fn save(&self, escalation: Escalation) -> Result<(), DomainError> {
+    async fn save(&self, escalation: Escalation, actor_scope: DataScope) -> Result<(), DomainError> {
         let mut g = self.data.lock().await;
+        let ex_owner = g.get(&escalation.id).map(|e| e.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &escalation.owner_user_id, &actor_scope)?;
         g.insert(escalation.id.clone(), escalation);
         Ok(())
     }
@@ -219,10 +247,8 @@ impl EscalationRepository for InMemoryEscalationRepository {
             .collect())
     }
 
-    async fn update(&self, escalation: Escalation) -> Result<(), DomainError> {
-        let mut g = self.data.lock().await;
-        g.insert(escalation.id.clone(), escalation);
-        Ok(())
+    async fn update(&self, escalation: Escalation, actor_scope: DataScope) -> Result<(), DomainError> {
+        self.save(escalation, actor_scope).await
     }
 }
 
@@ -241,8 +267,10 @@ impl InMemoryTechnicianRepository {
 
 #[async_trait]
 impl TechnicianRepository for InMemoryTechnicianRepository {
-    async fn save(&self, technician: Technician) -> Result<(), DomainError> {
+    async fn save(&self, technician: Technician, actor_scope: DataScope) -> Result<(), DomainError> {
         let mut g = self.data.lock().await;
+        let ex_owner = g.get(&technician.id).map(|t| t.owner_user_id.as_str());
+        enforce_entity_save(ex_owner, &technician.owner_user_id, &actor_scope)?;
         g.insert(technician.id.clone(), technician);
         Ok(())
     }

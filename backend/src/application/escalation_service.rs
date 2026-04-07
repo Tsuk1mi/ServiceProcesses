@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::application::rbac;
+use crate::auth::AuthUser;
 use crate::domain::entities::Escalation;
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
@@ -15,11 +17,13 @@ pub struct EscalationAppService {
 impl EscalationAppService {
     pub async fn create_escalation(
         &self,
+        caller: &AuthUser,
         escalation_id: String,
         request_id: String,
         reason: String,
         scope: DataScope,
     ) -> Result<Escalation, DomainError> {
+        rbac::require_any_role(caller, &["admin", "dispatcher", "supervisor"])?;
         let request = self
             .requests
             .get_by_id(&request_id, scope.clone())
@@ -27,7 +31,7 @@ impl EscalationAppService {
             .ok_or(DomainError::NotFound("service_request"))?;
 
         let escalation = Escalation::new(escalation_id, request_id, reason, request.owner_user_id)?;
-        self.escalations.save(escalation.clone()).await?;
+        self.escalations.save(escalation.clone(), scope.clone()).await?;
         self.events
             .publish(
                 "service_request.escalated",
@@ -50,14 +54,15 @@ impl EscalationAppService {
         self.escalations.list(scope).await
     }
 
-    pub async fn resolve(&self, escalation_id: &str, scope: DataScope) -> Result<Escalation, DomainError> {
+    pub async fn resolve(&self, caller: &AuthUser, escalation_id: &str, scope: DataScope) -> Result<Escalation, DomainError> {
+        rbac::require_any_role(caller, &["admin", "supervisor", "dispatcher"])?;
         let mut escalation = self
             .escalations
             .get_by_id(escalation_id, scope.clone())
             .await?
             .ok_or(DomainError::NotFound("escalation"))?;
         escalation.resolve()?;
-        self.escalations.update(escalation.clone()).await?;
+        self.escalations.update(escalation.clone(), scope.clone()).await?;
         self.events
             .publish(
                 "service_request.escalation_resolved",

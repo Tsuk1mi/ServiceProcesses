@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
 /// Область видимости данных для репозиториев (ownership + RBAC).
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum DataScope {
     /// Роль `admin`: все строки.
     All,
