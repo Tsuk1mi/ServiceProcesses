@@ -18,6 +18,7 @@ use service_processes_core::infrastructure::in_memory::{
     InMemoryAuditRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
     InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy, StdoutEventPublisher,
 };
+use service_processes_core::infrastructure::jobs::{run_worker, JobClient};
 use service_processes_core::interfaces::http::{router, AppState};
 use service_processes_core::ports::outbound::{AssetRepository, TechnicianRepository};
 use tokio::time::sleep;
@@ -34,6 +35,9 @@ async fn main() -> Result<(), DomainError> {
     let mode = env::var("APP_MODE").unwrap_or_else(|_| "api".to_string());
     if mode.eq_ignore_ascii_case("worker") {
         return run_sla_worker().await;
+    }
+    if mode.eq_ignore_ascii_case("queue_worker") {
+        return run_queue_worker().await;
     }
     run_api().await
 }
@@ -52,6 +56,19 @@ async fn run_api() -> Result<(), DomainError> {
         .await
         .expect("server terminated unexpectedly");
     Ok(())
+}
+
+async fn run_queue_worker() -> Result<(), DomainError> {
+    let redis_url = env::var("REDIS_URL").map_err(|_| DomainError::EmptyField("REDIS_URL"))?;
+    let amqp_url = env::var("RABBITMQ_URL").map_err(|_| DomainError::EmptyField("RABBITMQ_URL"))?;
+    let queue_name = env::var("JOB_QUEUE_NAME").unwrap_or_else(|_| "service_jobs".to_string());
+    tracing::info!(queue = %queue_name, "queue worker (RabbitMQ consumer) starting");
+    run_worker(&redis_url, &amqp_url, &queue_name)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "queue worker terminated");
+            DomainError::EmptyField("queue_worker")
+        })
 }
 
 async fn run_sla_worker() -> Result<(), DomainError> {
@@ -142,6 +159,24 @@ async fn build_state() -> Result<AppState, DomainError> {
         snapshots: analytics_snapshots,
     };
 
+    let queue_name = env::var("JOB_QUEUE_NAME").unwrap_or_else(|_| "service_jobs".to_string());
+    let jobs = match (env::var("REDIS_URL"), env::var("RABBITMQ_URL")) {
+        (Ok(ref redis_url), Ok(ref amqp_url)) => match JobClient::connect(redis_url, amqp_url, &queue_name).await {
+            Ok(client) => {
+                tracing::info!("фоновые задачи: RabbitMQ + Redis включены");
+                Some(Arc::new(client))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "подключение к очереди не удалось, /api/v1/jobs отключены");
+                None
+            }
+        },
+        _ => {
+            tracing::info!("задайте REDIS_URL и RABBITMQ_URL для POST /api/v1/jobs");
+            None
+        }
+    };
+
     Ok(AppState {
         assets: (*assets).clone(),
         requests: requests.clone(),
@@ -176,6 +211,7 @@ async fn build_state() -> Result<AppState, DomainError> {
         analytics_snapshot_service,
         jwt_secret,
         users,
+        jobs,
     })
 }
 

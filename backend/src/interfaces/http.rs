@@ -9,7 +9,10 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, OpenApi, ToSchema};
+use tower::ServiceBuilder;
+use tower_http::trace::TraceLayer;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
@@ -34,6 +37,7 @@ use crate::infrastructure::in_memory::{
     InMemoryAuditRepository, InMemoryEscalationRepository, InMemoryRequestRepository,
     InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy, StdoutEventPublisher,
 };
+use crate::infrastructure::jobs::JobClient;
 use crate::ports::inbound::{CreateRequestCommand, ServiceRequestUseCase};
 use crate::ports::outbound::{
     AssetRepository, ServiceRequestRepository, WorkOrderRepository,
@@ -83,6 +87,8 @@ pub struct AppState {
     pub analytics_snapshot_service: AnalyticsSnapshotService,
     pub jwt_secret: Arc<String>,
     pub users: Arc<InMemoryUserStore>,
+    /// RabbitMQ + Redis; если `None`, эндпоинты задач отвечают 503.
+    pub jobs: Option<Arc<JobClient>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -158,6 +164,29 @@ pub struct CreateTechnicianRequest {
     pub skills: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct EnqueueJobRequest {
+    /// `echo` или `simulate_slow`
+    pub kind: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EnqueueJobResponse {
+    pub job_id: Uuid,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct JobStatusResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Default, IntoParams, ToSchema)]
 #[into_params(parameter_in = Query)]
 pub struct ListQuery {
@@ -214,6 +243,8 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/dashboard/technicians/workload",
             get(get_technician_workload_summary),
         )
+        .route("/api/v1/jobs", post(enqueue_job))
+        .route("/api/v1/jobs/:id", get(get_job_status))
         .with_state(state);
 
     Router::new()
@@ -222,6 +253,7 @@ pub fn router(state: AppState) -> Router {
         )
         .merge(public)
         .merge(api)
+        .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()))
 }
 
 #[utoipa::path(
@@ -275,6 +307,110 @@ async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) ->
         )
             .into_response(),
     }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/jobs",
+    tag = "jobs",
+    security(("bearer" = [])),
+    request_body = EnqueueJobRequest,
+    responses(
+        (status = 202, description = "Задача в очереди RabbitMQ, статус в Redis", body = EnqueueJobResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 503, body = ErrorResponse)
+    )
+)]
+async fn enqueue_job(
+    State(state): State<AppState>,
+    auth: JwtAuth,
+    Json(body): Json<EnqueueJobRequest>,
+) -> impl IntoResponse {
+    let Some(ref jobs) = state.jobs else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                message: "очередь не настроена: задайте REDIS_URL и RABBITMQ_URL".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let owner = auth.sub.to_string();
+    match jobs
+        .enqueue(body.kind, body.payload, owner)
+        .await
+    {
+        Ok(job_id) => (
+            StatusCode::ACCEPTED,
+            Json(EnqueueJobResponse {
+                job_id,
+                status: "queued".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "enqueue job failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    message: "не удалось поставить задачу в очередь".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/jobs/{id}",
+    tag = "jobs",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "UUID задачи")),
+    responses(
+        (status = 200, body = JobStatusResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 503, body = ErrorResponse)
+    )
+)]
+async fn get_job_status(
+    State(state): State<AppState>,
+    auth: JwtAuth,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let Some(ref jobs) = state.jobs else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                message: "очередь не настроена: задайте REDIS_URL и RABBITMQ_URL".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let rec = match jobs.get_status(&id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return domain_error_to_response(DomainError::NotFound("job")),
+        Err(e) => {
+            tracing::error!(error = %e, "redis get job status");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    message: "не удалось прочитать статус задачи".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if !auth.is_admin() && rec.owner_user_id != auth.sub.to_string() {
+        return domain_error_to_response(DomainError::NotFound("job"));
+    }
+    let body = JobStatusResponse {
+        status: rec.status,
+        result: rec.result,
+        error: rec.error,
+    };
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 #[utoipa::path(
@@ -1454,16 +1590,37 @@ async fn get_sla_compliance_by_priority_summary(
     }
 }
 
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "bearer",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            );
+        }
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "Service Processes API",
         version = "0.1.0",
-        description = "REST API сервисных заявок. Аутентификация: POST /auth/login, далее заголовок `Authorization: Bearer <JWT>`. Роли в токене: admin, dispatcher, supervisor, technician, viewer, user. Администратор видит все записи; остальные — только сущности со своим owner_user_id."
+        description = "REST API сервисных заявок. Аутентификация: POST /auth/login, далее заголовок `Authorization: Bearer <JWT>`. Роли в токене: admin, dispatcher, supervisor, technician, viewer, user. Администратор видит все записи; остальные — только сущности со своим owner_user_id. Фоновые задачи: POST /api/v1/jobs (RabbitMQ) и статус в Redis."
     ),
+    modifiers(&SecurityAddon),
     paths(
         health,
         login,
+        enqueue_job,
+        get_job_status,
         create_asset,
         list_assets,
         get_asset,
@@ -1501,7 +1658,8 @@ async fn get_sla_compliance_by_priority_summary(
         (name = "sla", description = "SLA и автоматические действия"),
         (name = "technicians", description = "Техники"),
         (name = "audit", description = "Журнал аудита"),
-        (name = "dashboard", description = "Агрегаты для UI")
+        (name = "dashboard", description = "Агрегаты для UI"),
+        (name = "jobs", description = "Фоновые задачи (RabbitMQ + Redis)")
     )
 )]
 pub struct ApiDoc;
