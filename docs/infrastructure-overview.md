@@ -67,7 +67,7 @@ docker compose up -d --build
 
 `backend` / воркеры стартуют после **healthy** состояния Postgres, Redis и RabbitMQ.
 
-**Локальный `cargo run` против контейнеров:** пример переменных — `infra/docker/.env.example` (хост `localhost` и порты `5432`, `6379`, `5672`).
+**Локальный `cargo run` против контейнеров:** пример переменных — `infra/docker/sample.env` (хост `localhost` и порты `5432`, `6379`, `5672`). Файлы `.env*` в git игнорируются — скопируйте вручную в `.env` при необходимости.
 
 ---
 

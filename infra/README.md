@@ -9,7 +9,7 @@ cd infra/docker
 docker compose up -d --build
 ```
 
-Поднимаются **Postgres**, **Redis**, **RabbitMQ**, **backend** (API :8080), **sla-worker**, **queue-worker**. Переменные URL заданы в `docker-compose.yml`; для `cargo run` с хоста см. **`infra/docker/.env.example`**.
+Поднимаются **Postgres**, **Redis**, **RabbitMQ**, **backend** (API :8080), **sla-worker**, **queue-worker**. Переменные URL заданы в `docker-compose.yml`; для `cargo run` с хоста см. **`infra/docker/sample.env`**.
 
 Профиль `extras`: MinIO, Nexus — `docker compose --profile extras up -d`.
 

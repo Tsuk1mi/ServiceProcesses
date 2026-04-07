@@ -27,7 +27,7 @@ cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\infra\docker
 docker compose up -d --build
 ```
 
-В контейнерах задаётся **`DATABASE_URL=postgres://app:app@postgres:5432/service_processes`**, плюс **`REDIS_URL`**, **`RABBITMQ_URL`**. API в этом режиме хранит данные в Postgres, кэширует ответы **GET `/api/v1/*`** в Redis, публикует доменные события в exchange **`service_processes.events`** (RabbitMQ), а фоновые задачи (`POST /api/v1/jobs`) идут в очередь **`service_jobs`**. Локальный пример переменных для `cargo run` без Docker: `infra/docker/.env.example`.
+В контейнерах задаётся **`DATABASE_URL=postgres://app:app@postgres:5432/service_processes`**, плюс **`REDIS_URL`**, **`RABBITMQ_URL`**. API в этом режиме хранит данные в Postgres, кэширует ответы **GET `/api/v1/*`** в Redis, публикует доменные события в exchange **`service_processes.events`** (RabbitMQ), а фоновые задачи (`POST /api/v1/jobs`) идут в очередь **`service_jobs`**. Локальный пример переменных для `cargo run` без Docker: `infra/docker/sample.env`.
 
 ---
 
@@ -74,7 +74,7 @@ cargo run
 
 ### Вариант B: Postgres + Redis + RabbitMQ (как в Docker)
 
-Поднимите стек (см. §1.1), затем с теми же URL из `.env.example` (хост `localhost` вместо имён сервисов):
+Поднимите стек (см. §1.1), затем с теми же URL из `infra/docker/sample.env` (хост `localhost` вместо имён сервисов):
 
 ```powershell
 cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\backend
