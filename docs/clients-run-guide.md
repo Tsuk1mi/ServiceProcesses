@@ -8,12 +8,15 @@
 
 1. Запускается **сервер** (Rust backend на порту **8080**).
 2. **Windows (WPF)** или **Android** обращаются к HTTP API, в каркасе — в первую очередь к `GET /health`.
+3. Операции с данными (`/api/v1/...`) требуют **JWT**: сначала `POST /auth/login`, затем заголовок `Authorization: Bearer <token>`.
 
-Сейчас endpoint `GET /health` отвечает **JSON**:
+Сейчас `GET /health` отвечает **JSON**:
 
 ```json
 { "status": "ok" }
 ```
+
+Полный стек в Docker (Postgres, Redis, RabbitMQ, воркеры): см. **`docs/server-stack.md`** и `infra/docker/docker-compose.yml`.
 
 ---
 
@@ -65,6 +68,21 @@ Invoke-RestMethod -Uri "http://localhost:8080/health"
 ```
 
 Должен вернуться объект с полем `status: ok`.
+
+### 3.1 Вход (JWT) и вызов защищённого API
+
+Демо-пользователи (см. `backend/README.md`): например `admin` / `admin`.
+
+```powershell
+$base = "http://localhost:8080"
+$login = Invoke-RestMethod -Uri "$base/auth/login" -Method Post -ContentType "application/json" `
+  -Body '{"username":"admin","password":"admin"}'
+$token = $login.access_token
+$headers = @{ Authorization = "Bearer $token" }
+Invoke-RestMethod -Uri "$base/api/v1/assets" -Headers $headers
+```
+
+Опционально для фоновых задач нужны **Redis** и **RabbitMQ** (переменные `REDIS_URL`, `RABBITMQ_URL` при `cargo run`). Иначе `POST /api/v1/jobs` вернёт 503 — для проверки `GET /health` и списка активов этого достаточно.
 
 ---
 
@@ -163,7 +181,7 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 | Симптом | Что проверить |
 |---------|----------------|
-| Windows: «API недоступен» / ошибка сети | Запущен ли `cargo run`, не блокирует ли порт 8090 другой процесс, верен ли `SERVICE_PROCESSES_API_BASE_URL` |
+| Windows: «API недоступен» / ошибка сети | Запущен ли `cargo run`, не блокирует ли порт **8080** другой процесс, верен ли `SERVICE_PROCESSES_API_BASE_URL` |
 | Android: таймаут | Backend запущен, IP/10.0.2.2 верный, Wi‑Fi тот же, cleartext и разрешение INTERNET |
 | Windows: ошибки NuGet | Актуальный `nuget.config`, доступ в интернет или корп. Nexus |
 | Android: SDK not found | Переменная `ANDROID_HOME`, установка platform-tools через SDK Manager |
@@ -172,5 +190,5 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 ## 7. Что дальше (по коду клиентов)
 
-- Windows: заменить заглушки входа/регистрации в `MainViewModel` на реальные вызовы API (когда появятся эндпоинты), централизовать заголовки `x-role` / `x-actor-id` в `ApiClient` (см. `docs\api\backend-api.md`).
-- Android: вынести базовый URL в `buildTypes` / product flavors (dev/stage/prod), добавить OkHttp/Retrofit и модели DTO по контрактам API.
+- Windows: подключить к `POST /auth/login` сохранение `access_token` и подстановку заголовка **`Authorization: Bearer …`** в `ApiClient` для всех запросов к `/api/v1/*` (вместо устаревших `x-role` / `x-actor-id`). См. `docs\api\backend-api.md` и Swagger `http://localhost:8080/swagger-ui/`.
+- Android: то же для OkHttp interceptor; вынести базовый URL в `buildTypes` / product flavors (dev/stage/prod).
