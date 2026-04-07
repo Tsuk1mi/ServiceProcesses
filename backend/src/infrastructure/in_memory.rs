@@ -1,294 +1,305 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Technician, WorkOrder};
-use crate::domain::errors::DomainError;
+use async_trait::async_trait;
+use tokio::sync::Mutex;
+
 use crate::domain::analytics::{
     AnalyticsSnapshot, DashboardSummary, SlaComplianceByPriorityItem, SlaComplianceSummary,
     TechnicianWorkloadSummary,
 };
+use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Technician, WorkOrder};
+use crate::domain::errors::DomainError;
 use crate::domain::value_objects::{EscalationState, Priority, RequestStatus, WorkOrderStatus};
+use crate::ports::data_scope::DataScope;
 use crate::ports::outbound::{
-    AnalyticsQueryPort, AnalyticsSnapshotRepository, AssetRepository, AuditRepository, EscalationRepository,
-    EventPublisherPort, PriorityPolicyPort,
-    ServiceRequestRepository, SlaPolicyPort, TechnicianRepository, WorkOrderRepository,
+    AnalyticsQueryPort, AnalyticsSnapshotRepository, AssetRepository, AuditRepository,
+    EscalationRepository, EventPublisherPort, PriorityPolicyPort, ServiceRequestRepository,
+    SlaPolicyPort, TechnicianRepository, WorkOrderRepository,
 };
 
-#[derive(Clone, Default)]
+fn scope_matches(owner_user_id: &str, scope: &DataScope) -> bool {
+    match scope {
+        DataScope::All => true,
+        DataScope::Owner(u) => owner_user_id == u.to_string(),
+    }
+}
+
+#[derive(Clone)]
 pub struct InMemoryAssetRepository {
     data: Arc<Mutex<HashMap<String, Asset>>>,
 }
 
 impl InMemoryAssetRepository {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
+#[async_trait]
 impl AssetRepository for InMemoryAssetRepository {
-    fn save(&self, asset: Asset) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("asset repo mutex poisoned")
-            .insert(asset.id.clone(), asset);
+    async fn save(&self, asset: Asset) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(asset.id.clone(), asset);
         Ok(())
     }
 
-    fn get_by_id(&self, id: &str) -> Result<Option<Asset>, DomainError> {
-        Ok(self.data.lock().expect("asset repo mutex poisoned").get(id).cloned())
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<Asset>, DomainError> {
+        let g = self.data.lock().await;
+        let a = g.get(id).cloned();
+        Ok(a.filter(|x| scope_matches(&x.owner_user_id, &scope)))
     }
 
-    fn list(&self) -> Result<Vec<Asset>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("asset repo mutex poisoned")
-            .values()
+    async fn list(&self, scope: DataScope) -> Result<Vec<Asset>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.values()
+            .filter(|a| scope_matches(&a.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryRequestRepository {
     data: Arc<Mutex<HashMap<String, ServiceRequest>>>,
+    assets: Arc<InMemoryAssetRepository>,
 }
 
 impl InMemoryRequestRepository {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(assets: Arc<InMemoryAssetRepository>) -> Self {
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+            assets,
+        }
     }
 }
 
+#[async_trait]
 impl ServiceRequestRepository for InMemoryRequestRepository {
-    fn save(&self, request: ServiceRequest) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("request repo mutex poisoned")
-            .insert(request.id.clone(), request);
+    async fn save(&self, request: ServiceRequest) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(request.id.clone(), request);
         Ok(())
     }
 
-    fn get_by_id(&self, id: &str) -> Result<Option<ServiceRequest>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("request repo mutex poisoned")
-            .get(id)
-            .cloned())
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<ServiceRequest>, DomainError> {
+        let g = self.data.lock().await;
+        let r = g.get(id).cloned();
+        Ok(r.filter(|x| scope_matches(&x.owner_user_id, &scope)))
     }
 
-    fn list(&self) -> Result<Vec<ServiceRequest>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("request repo mutex poisoned")
-            .values()
+    async fn list(&self, scope: DataScope) -> Result<Vec<ServiceRequest>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.values()
+            .filter(|r| scope_matches(&r.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 
-    fn update(&self, request: ServiceRequest) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("request repo mutex poisoned")
-            .insert(request.id.clone(), request);
+    async fn update(&self, request: ServiceRequest) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(request.id.clone(), request);
         Ok(())
+    }
+
+    async fn list_with_assets(
+        &self,
+        scope: DataScope,
+    ) -> Result<Vec<(ServiceRequest, Option<Asset>)>, DomainError> {
+        let reqs = self.list(scope.clone()).await?;
+        let mut out = Vec::with_capacity(reqs.len());
+        for r in reqs {
+            let asset = self.assets.get_by_id(&r.asset_id, scope.clone()).await?;
+            out.push((r, asset));
+        }
+        Ok(out)
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryWorkOrderRepository {
     data: Arc<Mutex<HashMap<String, WorkOrder>>>,
 }
 
 impl InMemoryWorkOrderRepository {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
+#[async_trait]
 impl WorkOrderRepository for InMemoryWorkOrderRepository {
-    fn save(&self, work_order: WorkOrder) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("work order repo mutex poisoned")
-            .insert(work_order.id.clone(), work_order);
+    async fn save(&self, work_order: WorkOrder) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(work_order.id.clone(), work_order);
         Ok(())
     }
 
-    fn get_by_id(&self, id: &str) -> Result<Option<WorkOrder>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("work order repo mutex poisoned")
-            .get(id)
-            .cloned())
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<WorkOrder>, DomainError> {
+        let g = self.data.lock().await;
+        let w = g.get(id).cloned();
+        Ok(w.filter(|x| scope_matches(&x.owner_user_id, &scope)))
     }
 
-    fn list(&self) -> Result<Vec<WorkOrder>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("work order repo mutex poisoned")
-            .values()
+    async fn list(&self, scope: DataScope) -> Result<Vec<WorkOrder>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.values()
+            .filter(|w| scope_matches(&w.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 
-    fn list_by_request(&self, request_id: &str) -> Result<Vec<WorkOrder>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("work order repo mutex poisoned")
-            .values()
-            .filter(|wo| wo.request_id == request_id)
+    async fn list_by_request(
+        &self,
+        request_id: &str,
+        scope: DataScope,
+    ) -> Result<Vec<WorkOrder>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.values()
+            .filter(|wo| wo.request_id == request_id && scope_matches(&wo.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 
-    fn update(&self, work_order: WorkOrder) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("work order repo mutex poisoned")
-            .insert(work_order.id.clone(), work_order);
+    async fn update(&self, work_order: WorkOrder) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(work_order.id.clone(), work_order);
         Ok(())
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryEscalationRepository {
     data: Arc<Mutex<HashMap<String, Escalation>>>,
 }
 
 impl InMemoryEscalationRepository {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
+#[async_trait]
 impl EscalationRepository for InMemoryEscalationRepository {
-    fn save(&self, escalation: Escalation) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("escalation repo mutex poisoned")
-            .insert(escalation.id.clone(), escalation);
+    async fn save(&self, escalation: Escalation) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(escalation.id.clone(), escalation);
         Ok(())
     }
 
-    fn get_by_id(&self, id: &str) -> Result<Option<Escalation>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("escalation repo mutex poisoned")
-            .get(id)
-            .cloned())
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<Escalation>, DomainError> {
+        let g = self.data.lock().await;
+        let e = g.get(id).cloned();
+        Ok(e.filter(|x| scope_matches(&x.owner_user_id, &scope)))
     }
 
-    fn list(&self) -> Result<Vec<Escalation>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("escalation repo mutex poisoned")
-            .values()
+    async fn list(&self, scope: DataScope) -> Result<Vec<Escalation>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.values()
+            .filter(|e| scope_matches(&e.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 
-    fn list_by_request(&self, request_id: &str) -> Result<Vec<Escalation>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("escalation repo mutex poisoned")
-            .values()
-            .filter(|item| item.request_id == request_id)
+    async fn list_by_request(
+        &self,
+        request_id: &str,
+        scope: DataScope,
+    ) -> Result<Vec<Escalation>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.values()
+            .filter(|e| e.request_id == request_id && scope_matches(&e.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 
-    fn update(&self, escalation: Escalation) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("escalation repo mutex poisoned")
-            .insert(escalation.id.clone(), escalation);
+    async fn update(&self, escalation: Escalation) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(escalation.id.clone(), escalation);
         Ok(())
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryTechnicianRepository {
     data: Arc<Mutex<HashMap<String, Technician>>>,
 }
 
 impl InMemoryTechnicianRepository {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
+#[async_trait]
 impl TechnicianRepository for InMemoryTechnicianRepository {
-    fn save(&self, technician: Technician) -> Result<(), DomainError> {
-        self.data
-            .lock()
-            .expect("technician repo mutex poisoned")
-            .insert(technician.id.clone(), technician);
+    async fn save(&self, technician: Technician) -> Result<(), DomainError> {
+        let mut g = self.data.lock().await;
+        g.insert(technician.id.clone(), technician);
         Ok(())
     }
 
-    fn get_by_id(&self, id: &str) -> Result<Option<Technician>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("technician repo mutex poisoned")
-            .get(id)
-            .cloned())
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<Technician>, DomainError> {
+        let g = self.data.lock().await;
+        let t = g.get(id).cloned();
+        Ok(t.filter(|x| scope_matches(&x.owner_user_id, &scope)))
     }
 
-    fn list(&self) -> Result<Vec<Technician>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("technician repo mutex poisoned")
-            .values()
+    async fn list(&self, scope: DataScope) -> Result<Vec<Technician>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.values()
+            .filter(|t| scope_matches(&t.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryAuditRepository {
     data: Arc<Mutex<Vec<AuditRecord>>>,
 }
 
 impl InMemoryAuditRepository {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            data: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
+#[async_trait]
 impl AuditRepository for InMemoryAuditRepository {
-    fn save(&self, record: AuditRecord) -> Result<(), DomainError> {
-        self.data.lock().expect("audit repo mutex poisoned").push(record);
+    async fn save(&self, record: AuditRecord) -> Result<(), DomainError> {
+        self.data.lock().await.push(record);
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<AuditRecord>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("audit repo mutex poisoned")
-            .iter()
+    async fn list(&self, scope: DataScope) -> Result<Vec<AuditRecord>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.iter()
+            .filter(|r| scope_matches(&r.owner_user_id, &scope))
             .cloned()
             .collect())
     }
 
-    fn list_by_request(&self, request_id: &str) -> Result<Vec<AuditRecord>, DomainError> {
-        Ok(self
-            .data
-            .lock()
-            .expect("audit repo mutex poisoned")
-            .iter()
-            .filter(|r| r.request_id.as_deref() == Some(request_id))
+    async fn list_by_request(
+        &self,
+        request_id: &str,
+        scope: DataScope,
+    ) -> Result<Vec<AuditRecord>, DomainError> {
+        let g = self.data.lock().await;
+        Ok(g.iter()
+            .filter(|r| {
+                r.request_id.as_deref() == Some(request_id) && scope_matches(&r.owner_user_id, &scope)
+            })
             .cloned()
             .collect())
     }
@@ -331,8 +342,10 @@ impl PriorityPolicyPort for KeywordPriorityPolicy {
 #[derive(Clone, Copy)]
 pub struct StdoutEventPublisher;
 
+#[async_trait]
 impl EventPublisherPort for StdoutEventPublisher {
-    fn publish(&self, topic: &str, payload: &str) -> Result<(), DomainError> {
+    async fn publish(&self, topic: &str, payload: &str) -> Result<(), DomainError> {
+        tracing::info!(topic = %topic, "event published");
         println!("[event] topic={topic}; payload={payload}");
         Ok(())
     }
@@ -346,11 +359,16 @@ pub struct InMemoryAnalyticsQuery {
     pub technicians: InMemoryTechnicianRepository,
 }
 
+#[async_trait]
 impl AnalyticsQueryPort for InMemoryAnalyticsQuery {
-    fn dashboard_summary(&self, now_epoch: u64) -> Result<DashboardSummary, DomainError> {
-        let requests = self.requests.list()?;
-        let work_orders = self.work_orders.list()?;
-        let escalations = self.escalations.list()?;
+    async fn dashboard_summary(
+        &self,
+        now_epoch: u64,
+        scope: DataScope,
+    ) -> Result<DashboardSummary, DomainError> {
+        let requests = self.requests.list(scope.clone()).await?;
+        let work_orders = self.work_orders.list(scope.clone()).await?;
+        let escalations = self.escalations.list(scope).await?;
 
         let total_requests = requests.len();
         let open_requests = requests.iter().filter(|r| !r.is_terminal()).count();
@@ -395,8 +413,12 @@ impl AnalyticsQueryPort for InMemoryAnalyticsQuery {
         })
     }
 
-    fn sla_compliance_summary(&self, now_epoch: u64) -> Result<SlaComplianceSummary, DomainError> {
-        let requests = self.requests.list()?;
+    async fn sla_compliance_summary(
+        &self,
+        now_epoch: u64,
+        scope: DataScope,
+    ) -> Result<SlaComplianceSummary, DomainError> {
+        let requests = self.requests.list(scope).await?;
         let open_requests = requests.into_iter().filter(|r| !r.is_terminal()).collect::<Vec<_>>();
         let total_open_requests = open_requests.len();
         let overdue_open_requests = open_requests
@@ -418,9 +440,10 @@ impl AnalyticsQueryPort for InMemoryAnalyticsQuery {
         })
     }
 
-    fn sla_compliance_by_priority_summary(
+    async fn sla_compliance_by_priority_summary(
         &self,
         now_epoch: u64,
+        scope: DataScope,
     ) -> Result<Vec<SlaComplianceByPriorityItem>, DomainError> {
         #[derive(Default, Clone, Copy)]
         struct Counters {
@@ -433,7 +456,7 @@ impl AnalyticsQueryPort for InMemoryAnalyticsQuery {
         let mut high = Counters::default();
         let mut critical = Counters::default();
 
-        let requests = self.requests.list()?;
+        let requests = self.requests.list(scope).await?;
         for req in requests.into_iter().filter(|r| !r.is_terminal()) {
             let overdue = now_epoch > req.created_at_epoch_sec + (req.sla_minutes as u64) * 60;
             match req.priority {
@@ -489,11 +512,12 @@ impl AnalyticsQueryPort for InMemoryAnalyticsQuery {
         Ok(items)
     }
 
-    fn technician_workload_summary(
+    async fn technician_workload_summary(
         &self,
+        scope: DataScope,
     ) -> Result<Vec<TechnicianWorkloadSummary>, DomainError> {
-        let technicians = self.technicians.list()?;
-        let orders = self.work_orders.list()?;
+        let technicians = self.technicians.list(scope.clone()).await?;
+        let orders = self.work_orders.list(scope).await?;
 
         let mut by_id: HashMap<String, TechnicianWorkloadSummary> = technicians
             .into_iter()
@@ -530,46 +554,51 @@ impl AnalyticsQueryPort for InMemoryAnalyticsQuery {
 
         let mut items: Vec<TechnicianWorkloadSummary> = by_id.into_values().collect();
         items.sort_by(|a, b| {
-            b.total.cmp(&a.total).then_with(|| a.technician_id.cmp(&b.technician_id))
+            b.total
+                .cmp(&a.total)
+                .then_with(|| a.technician_id.cmp(&b.technician_id))
         });
         Ok(items)
     }
 
-    fn list_requests(&self) -> Result<Vec<ServiceRequest>, DomainError> {
-        self.requests.list()
+    async fn list_requests(&self, scope: DataScope) -> Result<Vec<ServiceRequest>, DomainError> {
+        self.requests.list(scope).await
     }
 
-    fn list_work_orders(&self) -> Result<Vec<WorkOrder>, DomainError> {
-        self.work_orders.list()
+    async fn list_work_orders(&self, scope: DataScope) -> Result<Vec<WorkOrder>, DomainError> {
+        self.work_orders.list(scope).await
     }
 
-    fn list_escalations(&self) -> Result<Vec<Escalation>, DomainError> {
-        self.escalations.list()
+    async fn list_escalations(&self, scope: DataScope) -> Result<Vec<Escalation>, DomainError> {
+        self.escalations.list(scope).await
     }
 
-    fn list_technicians(&self) -> Result<Vec<Technician>, DomainError> {
-        self.technicians.list()
+    async fn list_technicians(&self, scope: DataScope) -> Result<Vec<Technician>, DomainError> {
+        self.technicians.list(scope).await
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryAnalyticsSnapshotRepository {
     latest: Arc<Mutex<Option<AnalyticsSnapshot>>>,
 }
 
 impl InMemoryAnalyticsSnapshotRepository {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            latest: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
+#[async_trait]
 impl AnalyticsSnapshotRepository for InMemoryAnalyticsSnapshotRepository {
-    fn get_latest(&self) -> Result<Option<AnalyticsSnapshot>, DomainError> {
-        Ok(self.latest.lock().expect("analytics snapshot mutex poisoned").clone())
+    async fn get_latest(&self) -> Result<Option<AnalyticsSnapshot>, DomainError> {
+        Ok(self.latest.lock().await.clone())
     }
 
-    fn upsert(&self, snapshot: AnalyticsSnapshot) -> Result<(), DomainError> {
-        *self.latest.lock().expect("analytics snapshot mutex poisoned") = Some(snapshot);
+    async fn upsert(&self, snapshot: AnalyticsSnapshot) -> Result<(), DomainError> {
+        *self.latest.lock().await = Some(snapshot);
         Ok(())
     }
 }

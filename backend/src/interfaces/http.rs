@@ -1,5 +1,9 @@
-use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::header::AUTHORIZATION;
+use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
@@ -8,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
+
+use crate::auth::{sign_token, verify_token, AuthUser, InMemoryUserStore};
 
 use crate::application::audit_service::AuditAppService;
 use crate::application::escalation_service::EscalationAppService;
@@ -30,7 +36,7 @@ use crate::infrastructure::in_memory::{
 };
 use crate::ports::inbound::{CreateRequestCommand, ServiceRequestUseCase};
 use crate::ports::outbound::{
-    AssetRepository, EscalationRepository, ServiceRequestRepository, WorkOrderRepository,
+    AssetRepository, ServiceRequestRepository, WorkOrderRepository,
 };
 
 type AppService = ServiceRequestAppService<
@@ -75,6 +81,8 @@ pub struct AppState {
     pub sla_service: SlaService,
     pub reporting_service: ReportingService,
     pub analytics_snapshot_service: AnalyticsSnapshotService,
+    pub jwt_secret: Arc<String>,
+    pub users: Arc<InMemoryUserStore>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -116,6 +124,19 @@ pub struct ErrorResponse {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LoginResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: i64,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateWorkOrderRequest {
     pub request_id: String,
 }
@@ -153,17 +174,13 @@ pub struct RequestListQuery {
     pub priority: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActorRole {
-    Dispatcher,
-    Technician,
-    Supervisor,
-    Viewer,
-}
-
 pub fn router(state: AppState) -> Router {
-    let api = Router::new()
+    let public = Router::new()
         .route("/health", get(health))
+        .route("/auth/login", post(login))
+        .with_state(state.clone());
+
+    let api = Router::new()
         .route("/api/v1/assets", post(create_asset).get(list_assets))
         .route("/api/v1/assets/:id", get(get_asset))
         .route("/api/v1/requests", post(create_request).get(list_requests))
@@ -203,6 +220,7 @@ pub fn router(state: AppState) -> Router {
         .merge(
             SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()),
         )
+        .merge(public)
         .merge(api)
 }
 
@@ -216,6 +234,47 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".into(),
     })
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "JWT", body = LoginResponse),
+        (status = 401, body = ErrorResponse)
+    )
+)]
+async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) -> impl IntoResponse {
+    let Some(user) = state.users.verify(&body.username, &body.password) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                message: "invalid credentials".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let ttl = 24;
+    match sign_token(state.jwt_secret.as_str(), &user, ttl) {
+        Ok(token) => (
+            StatusCode::OK,
+            Json(LoginResponse {
+                access_token: token,
+                token_type: "Bearer".to_string(),
+                expires_in: ttl * 3600,
+            }),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                message: "token issue failed".to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 #[utoipa::path(
@@ -235,24 +294,29 @@ async fn health() -> Json<HealthResponse> {
 )]
 async fn create_asset(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Json(body): Json<CreateAssetRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Dispatcher, ActorRole::Supervisor]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "dispatcher", "supervisor"]) {
+        return r;
     }
     let id = format!("asset-{}", Uuid::new_v4().simple());
-    match Asset::new(id, body.kind, body.title, body.location) {
-        Ok(asset) => match state.assets.save(asset.clone()) {
+    let owner = auth.sub.to_string();
+    match Asset::new(id, body.kind, body.title, body.location, owner.clone()) {
+        Ok(asset) => match state.assets.save(asset.clone()).await {
             Ok(()) => {
-                let _ = state.audit_service.record(
-                    None,
-                    "asset",
-                    "create",
-                    role_name(parse_role(&headers)),
-                    parse_actor_id(&headers),
-                    format!("asset_id={}", asset.id),
-                );
+                let _ = state
+                    .audit_service
+                    .record(
+                        None,
+                        "asset",
+                        "create",
+                        auth.primary_role_for_audit(),
+                        Some(auth.sub.to_string()),
+                        format!("asset_id={}", asset.id),
+                        owner,
+                    )
+                    .await;
                 (StatusCode::CREATED, Json(asset)).into_response()
             }
             Err(e) => domain_error_to_response(e),
@@ -270,8 +334,9 @@ async fn create_asset(
         (status = 500, body = ErrorResponse)
     )
 )]
-async fn list_assets(State(state): State<AppState>) -> impl IntoResponse {
-    match state.assets.list() {
+async fn list_assets(State(state): State<AppState>, auth: JwtAuth) -> impl IntoResponse {
+    let scope = auth.data_scope();
+    match state.assets.list(scope).await {
         Ok(assets) => (StatusCode::OK, Json(assets)).into_response(),
         Err(e) => domain_error_to_response(e),
     }
@@ -287,8 +352,13 @@ async fn list_assets(State(state): State<AppState>) -> impl IntoResponse {
         (status = 404, body = ErrorResponse)
     )
 )]
-async fn get_asset(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match state.assets.get_by_id(&id) {
+async fn get_asset(
+    State(state): State<AppState>,
+    auth: JwtAuth,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scope = auth.data_scope();
+    match state.assets.get_by_id(&id, scope).await {
         Ok(Some(asset)) => (StatusCode::OK, Json(asset)).into_response(),
         Ok(None) => domain_error_to_response(DomainError::NotFound("asset")),
         Err(e) => domain_error_to_response(e),
@@ -313,29 +383,42 @@ async fn get_asset(State(state): State<AppState>, Path(id): Path<String>) -> imp
 )]
 async fn create_request(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Json(body): Json<CreateServiceRequestRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Dispatcher, ActorRole::Supervisor]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "dispatcher", "supervisor", "user"]) {
+        return r;
     }
+    let scope = auth.data_scope();
     let request_id = format!("req-{}", Uuid::new_v4().simple());
     let command = CreateRequestCommand {
-        request_id,
-        asset_id: body.asset_id,
+        request_id: request_id.clone(),
+        asset_id: body.asset_id.clone(),
         description: body.description,
     };
 
-    match state.service.create_request(command.clone()) {
+    match state.service.create_request(command.clone(), scope.clone()).await {
         Ok(()) => {
-            let _ = state.audit_service.record(
-                Some(command.request_id.clone()),
-                "service_request",
-                "create",
-                role_name(parse_role(&headers)),
-                parse_actor_id(&headers),
-                format!("asset_id={}", command.asset_id),
-            );
+            let audit_owner = state
+                .assets
+                .get_by_id(&body.asset_id, scope.clone())
+                .await
+                .ok()
+                .flatten()
+                .map(|a| a.owner_user_id)
+                .unwrap_or_else(|| auth.sub.to_string());
+            let _ = state
+                .audit_service
+                .record(
+                    Some(command.request_id.clone()),
+                    "service_request",
+                    "create",
+                    auth.primary_role_for_audit(),
+                    Some(auth.sub.to_string()),
+                    format!("asset_id={}", command.asset_id),
+                    audit_owner,
+                )
+                .await;
             (
                 StatusCode::CREATED,
                 Json(MutationResult {
@@ -360,9 +443,11 @@ async fn create_request(
 )]
 async fn list_requests(
     State(state): State<AppState>,
+    auth: JwtAuth,
     Query(query): Query<RequestListQuery>,
 ) -> impl IntoResponse {
-    match state.requests.list() {
+    let scope = auth.data_scope();
+    match state.requests.list(scope).await {
         Ok(requests) => {
             let filtered = requests
                 .into_iter()
@@ -386,8 +471,13 @@ async fn list_requests(
         (status = 404, body = ErrorResponse)
     )
 )]
-async fn get_request(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match state.requests.get_by_id(&id) {
+async fn get_request(
+    State(state): State<AppState>,
+    auth: JwtAuth,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scope = auth.data_scope();
+    match state.requests.get_by_id(&id, scope).await {
         Ok(Some(request)) => (StatusCode::OK, Json(request)).into_response(),
         Ok(None) => domain_error_to_response(DomainError::NotFound("service_request")),
         Err(e) => domain_error_to_response(e),
@@ -406,9 +496,11 @@ async fn get_request(State(state): State<AppState>, Path(id): Path<String>) -> i
 )]
 async fn list_overdue_requests(
     State(state): State<AppState>,
+    auth: JwtAuth,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    match state.sla_service.list_overdue_requests(now_epoch()) {
+    let scope = auth.data_scope();
+    match state.sla_service.list_overdue_requests(now_epoch(), scope).await {
         Ok(overdue) => {
             (StatusCode::OK, Json(apply_pagination(overdue, query.limit, query.offset))).into_response()
         }
@@ -436,13 +528,14 @@ async fn list_overdue_requests(
 )]
 async fn update_request_status(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Path(id): Path<String>,
     Json(body): Json<UpdateStatusRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Dispatcher, ActorRole::Supervisor]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "dispatcher", "supervisor"]) {
+        return r;
     }
+    let scope = auth.data_scope();
     let next = match parse_status(&body.status) {
         Some(s) => s,
         None => {
@@ -456,16 +549,25 @@ async fn update_request_status(
         }
     };
 
-    match state.service.update_status(&id, next) {
+    let audit_owner = match state.requests.get_by_id(&id, scope.clone()).await {
+        Ok(Some(r)) => r.owner_user_id,
+        _ => auth.sub.to_string(),
+    };
+
+    match state.service.update_status(&id, next, scope).await {
         Ok(()) => {
-            let _ = state.audit_service.record(
-                Some(id.clone()),
-                "service_request",
-                "update_status",
-                role_name(parse_role(&headers)),
-                parse_actor_id(&headers),
-                format!("status={:?}", next),
-            );
+            let _ = state
+                .audit_service
+                .record(
+                    Some(id.clone()),
+                    "service_request",
+                    "update_status",
+                    auth.primary_role_for_audit(),
+                    Some(auth.sub.to_string()),
+                    format!("status={:?}", next),
+                    audit_owner,
+                )
+                .await;
             (
                 StatusCode::OK,
                 Json(MutationResult {
@@ -496,26 +598,33 @@ async fn update_request_status(
 )]
 async fn create_work_order(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Json(body): Json<CreateWorkOrderRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Dispatcher, ActorRole::Supervisor]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "dispatcher", "supervisor"]) {
+        return r;
     }
+    let scope = auth.data_scope();
     let id = format!("wo-{}", Uuid::new_v4().simple());
     match state
         .work_order_service
-        .create_work_order(id, body.request_id)
+        .create_work_order(id, body.request_id.clone(), scope.clone())
+        .await
     {
         Ok(order) => {
-            let _ = state.audit_service.record(
-                Some(order.request_id.clone()),
-                "work_order",
-                "create",
-                role_name(parse_role(&headers)),
-                parse_actor_id(&headers),
-                format!("work_order_id={}", order.id),
-            );
+            let audit_owner = order.owner_user_id.clone();
+            let _ = state
+                .audit_service
+                .record(
+                    Some(order.request_id.clone()),
+                    "work_order",
+                    "create",
+                    auth.primary_role_for_audit(),
+                    Some(auth.sub.to_string()),
+                    format!("work_order_id={}", order.id),
+                    audit_owner,
+                )
+                .await;
             (StatusCode::CREATED, Json(order)).into_response()
         }
         Err(e) => domain_error_to_response(e),
@@ -539,21 +648,24 @@ async fn create_work_order(
 )]
 async fn list_work_orders(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(
-        &headers,
+    if let Err(r) = require_roles(
+        &auth,
         &[
-            ActorRole::Supervisor,
-            ActorRole::Dispatcher,
-            ActorRole::Viewer,
-            ActorRole::Technician,
+            "admin",
+            "supervisor",
+            "dispatcher",
+            "viewer",
+            "technician",
+            "user",
         ],
     ) {
-        return response;
+        return r;
     }
-    match state.work_orders.list() {
+    let scope = auth.data_scope();
+    match state.work_orders.list(scope).await {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
         Err(e) => domain_error_to_response(e),
     }
@@ -574,10 +686,12 @@ async fn list_work_orders(
 )]
 async fn list_work_orders_by_request(
     State(state): State<AppState>,
+    auth: JwtAuth,
     Path(id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    match state.work_order_service.list_by_request(&id) {
+    let scope = auth.data_scope();
+    match state.work_order_service.list_by_request(&id, scope).await {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
         Err(e) => domain_error_to_response(e),
     }
@@ -602,23 +716,33 @@ async fn list_work_orders_by_request(
 )]
 async fn assign_work_order(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Path(id): Path<String>,
     Json(body): Json<AssignWorkOrderRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Dispatcher, ActorRole::Supervisor]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "dispatcher", "supervisor"]) {
+        return r;
     }
-    match state.work_order_service.assign(&id, body.assignee) {
+    let scope = auth.data_scope();
+    match state.work_order_service.assign(&id, body.assignee, scope.clone()).await {
         Ok(order) => {
-            let _ = state.audit_service.record(
-                Some(order.request_id.clone()),
-                "work_order",
-                "assign",
-                role_name(parse_role(&headers)),
-                parse_actor_id(&headers),
-                format!("work_order_id={},assignee={}", order.id, order.assignee.clone().unwrap_or_default()),
-            );
+            let audit_owner = order.owner_user_id.clone();
+            let _ = state
+                .audit_service
+                .record(
+                    Some(order.request_id.clone()),
+                    "work_order",
+                    "assign",
+                    auth.primary_role_for_audit(),
+                    Some(auth.sub.to_string()),
+                    format!(
+                        "work_order_id={},assignee={}",
+                        order.id,
+                        order.assignee.clone().unwrap_or_default()
+                    ),
+                    audit_owner,
+                )
+                .await;
             (StatusCode::OK, Json(order)).into_response()
         }
         Err(e) => domain_error_to_response(e),
@@ -643,56 +767,56 @@ async fn assign_work_order(
 )]
 async fn start_work_order(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let role = match authorize(
-        &headers,
-        &[ActorRole::Technician, ActorRole::Dispatcher, ActorRole::Supervisor],
-    ) {
-        Ok(role) => role,
-        Err(response) => {
-            return response;
-        }
-    };
-    if role == ActorRole::Technician {
-        let actor_id = match parse_actor_id(&headers) {
-            Some(v) => v,
-            None => {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(ErrorResponse {
-                        message: "x-actor-id is required for technician role".to_string(),
-                    }),
-                )
-                    .into_response()
-            }
-        };
-        match state.work_order_service.start_by_actor(&id, &actor_id) {
+    if let Err(r) = require_roles(&auth, &["admin", "technician", "dispatcher", "supervisor"]) {
+        return r;
+    }
+    let scope = auth.data_scope();
+    let is_technician_only = auth.has_any_role(&["technician"]) && !auth.is_admin() && !auth.has_any_role(&["dispatcher", "supervisor"]);
+
+    if is_technician_only {
+        let actor_id = auth.sub.to_string();
+        match state
+            .work_order_service
+            .start_by_actor(&id, &actor_id, scope.clone())
+            .await
+        {
             Ok(order) => {
-                let _ = state.audit_service.record(
-                    Some(order.request_id.clone()),
-                    "work_order",
-                    "start",
-                    role_name(Some(role)),
-                    Some(actor_id),
-                    format!("work_order_id={}", order.id),
-                );
+                let audit_owner = order.owner_user_id.clone();
+                let _ = state
+                    .audit_service
+                    .record(
+                        Some(order.request_id.clone()),
+                        "work_order",
+                        "start",
+                        auth.primary_role_for_audit(),
+                        Some(actor_id),
+                        format!("work_order_id={}", order.id),
+                        audit_owner,
+                    )
+                    .await;
                 (StatusCode::OK, Json(order)).into_response()
             }
             Err(e) => domain_error_to_response(e),
         }
     } else {
-        match state.work_order_service.start(&id) {
+        match state.work_order_service.start(&id, scope.clone()).await {
             Ok(order) => {
-                let _ = state.audit_service.record(
-                    Some(order.request_id.clone()),
-                    "work_order",
-                    "start",
-                    role_name(Some(role)),
-                    parse_actor_id(&headers),
-                    format!("work_order_id={}", order.id),
-                );
+                let audit_owner = order.owner_user_id.clone();
+                let _ = state
+                    .audit_service
+                    .record(
+                        Some(order.request_id.clone()),
+                        "work_order",
+                        "start",
+                        auth.primary_role_for_audit(),
+                        Some(auth.sub.to_string()),
+                        format!("work_order_id={}", order.id),
+                        audit_owner,
+                    )
+                    .await;
                 (StatusCode::OK, Json(order)).into_response()
             }
             Err(e) => domain_error_to_response(e),
@@ -718,56 +842,56 @@ async fn start_work_order(
 )]
 async fn complete_work_order(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let role = match authorize(
-        &headers,
-        &[ActorRole::Technician, ActorRole::Dispatcher, ActorRole::Supervisor],
-    ) {
-        Ok(role) => role,
-        Err(response) => {
-            return response;
-        }
-    };
-    if role == ActorRole::Technician {
-        let actor_id = match parse_actor_id(&headers) {
-            Some(v) => v,
-            None => {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(ErrorResponse {
-                        message: "x-actor-id is required for technician role".to_string(),
-                    }),
-                )
-                    .into_response()
-            }
-        };
-        match state.work_order_service.complete_by_actor(&id, &actor_id) {
+    if let Err(r) = require_roles(&auth, &["admin", "technician", "dispatcher", "supervisor"]) {
+        return r;
+    }
+    let scope = auth.data_scope();
+    let is_technician_only = auth.has_any_role(&["technician"]) && !auth.is_admin() && !auth.has_any_role(&["dispatcher", "supervisor"]);
+
+    if is_technician_only {
+        let actor_id = auth.sub.to_string();
+        match state
+            .work_order_service
+            .complete_by_actor(&id, &actor_id, scope.clone())
+            .await
+        {
             Ok(order) => {
-                let _ = state.audit_service.record(
-                    Some(order.request_id.clone()),
-                    "work_order",
-                    "complete",
-                    role_name(Some(role)),
-                    Some(actor_id),
-                    format!("work_order_id={}", order.id),
-                );
+                let audit_owner = order.owner_user_id.clone();
+                let _ = state
+                    .audit_service
+                    .record(
+                        Some(order.request_id.clone()),
+                        "work_order",
+                        "complete",
+                        auth.primary_role_for_audit(),
+                        Some(actor_id),
+                        format!("work_order_id={}", order.id),
+                        audit_owner,
+                    )
+                    .await;
                 (StatusCode::OK, Json(order)).into_response()
             }
             Err(e) => domain_error_to_response(e),
         }
     } else {
-        match state.work_order_service.complete(&id) {
+        match state.work_order_service.complete(&id, scope.clone()).await {
             Ok(order) => {
-                let _ = state.audit_service.record(
-                    Some(order.request_id.clone()),
-                    "work_order",
-                    "complete",
-                    role_name(Some(role)),
-                    parse_actor_id(&headers),
-                    format!("work_order_id={}", order.id),
-                );
+                let audit_owner = order.owner_user_id.clone();
+                let _ = state
+                    .audit_service
+                    .record(
+                        Some(order.request_id.clone()),
+                        "work_order",
+                        "complete",
+                        auth.primary_role_for_audit(),
+                        Some(auth.sub.to_string()),
+                        format!("work_order_id={}", order.id),
+                        audit_owner,
+                    )
+                    .await;
                 (StatusCode::OK, Json(order)).into_response()
             }
             Err(e) => domain_error_to_response(e),
@@ -775,25 +899,64 @@ async fn complete_work_order(
     }
 }
 
-fn parse_actor_id(headers: &HeaderMap) -> Option<String> {
-    Some(headers.get("x-actor-id")?.to_str().ok()?.trim().to_string())
+/// Обёртка для извлечения JWT из запроса (обход правил сирот для `FromRequestParts`).
+#[derive(Clone, Debug)]
+pub struct JwtAuth(pub AuthUser);
+
+impl std::ops::Deref for JwtAuth {
+    type Target = AuthUser;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-fn authorize(headers: &HeaderMap, allowed: &[ActorRole]) -> Result<ActorRole, axum::response::Response> {
-    let role = parse_role(headers).ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                message: "missing or invalid x-role header".to_string(),
-            }),
-        )
-            .into_response()
-    })?;
+#[async_trait]
+impl FromRequestParts<AppState> for JwtAuth {
+    type Rejection = (StatusCode, Json<ErrorResponse>);
 
-    if allowed.contains(&role) {
-        return Ok(role);
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let raw = parts
+            .headers
+            .get(AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(ErrorResponse {
+                        message: "missing Authorization header".to_string(),
+                    }),
+                )
+            })?;
+
+        let token = raw
+            .strip_prefix("Bearer ")
+            .or_else(|| raw.strip_prefix("bearer "))
+            .ok_or_else(|| {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(ErrorResponse {
+                        message: "expected Bearer token".to_string(),
+                    }),
+                )
+            })?;
+
+        let user = verify_token(state.jwt_secret.as_str(), token.trim()).map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    message: "invalid or expired token".to_string(),
+                }),
+            )
+        })?;
+        Ok(JwtAuth(user))
     }
+}
 
+fn require_roles(auth: &JwtAuth, allowed: &[&str]) -> Result<(), axum::response::Response> {
+    if auth.0.has_any_role(allowed) {
+        return Ok(());
+    }
     Err((
         StatusCode::FORBIDDEN,
         Json(ErrorResponse {
@@ -821,26 +984,33 @@ fn authorize(headers: &HeaderMap, allowed: &[ActorRole]) -> Result<ActorRole, ax
 )]
 async fn create_escalation(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Json(body): Json<CreateEscalationRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Dispatcher, ActorRole::Supervisor]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "dispatcher", "supervisor"]) {
+        return r;
     }
+    let scope = auth.data_scope();
     let id = format!("esc-{}", Uuid::new_v4().simple());
     match state
         .escalation_service
-        .create_escalation(id, body.request_id, body.reason)
+        .create_escalation(id, body.request_id, body.reason, scope.clone())
+        .await
     {
         Ok(escalation) => {
-            let _ = state.audit_service.record(
-                Some(escalation.request_id.clone()),
-                "escalation",
-                "create",
-                role_name(parse_role(&headers)),
-                parse_actor_id(&headers),
-                format!("escalation_id={}", escalation.id),
-            );
+            let audit_owner = escalation.owner_user_id.clone();
+            let _ = state
+                .audit_service
+                .record(
+                    Some(escalation.request_id.clone()),
+                    "escalation",
+                    "create",
+                    auth.primary_role_for_audit(),
+                    Some(auth.sub.to_string()),
+                    format!("escalation_id={}", escalation.id),
+                    audit_owner,
+                )
+                .await;
             (StatusCode::CREATED, Json(escalation)).into_response()
         }
         Err(e) => domain_error_to_response(e),
@@ -864,21 +1034,24 @@ async fn create_escalation(
 )]
 async fn list_escalations(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(
-        &headers,
+    if let Err(r) = require_roles(
+        &auth,
         &[
-            ActorRole::Supervisor,
-            ActorRole::Dispatcher,
-            ActorRole::Viewer,
-            ActorRole::Technician,
+            "admin",
+            "supervisor",
+            "dispatcher",
+            "viewer",
+            "technician",
+            "user",
         ],
     ) {
-        return response;
+        return r;
     }
-    match state.escalations.list() {
+    let scope = auth.data_scope();
+    match state.escalation_service.list_all(scope).await {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
         Err(e) => domain_error_to_response(e),
     }
@@ -899,10 +1072,12 @@ async fn list_escalations(
 )]
 async fn list_escalations_by_request(
     State(state): State<AppState>,
+    auth: JwtAuth,
     Path(id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    match state.escalation_service.list_by_request(&id) {
+    let scope = auth.data_scope();
+    match state.escalation_service.list_by_request(&id, scope).await {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
         Err(e) => domain_error_to_response(e),
     }
@@ -926,22 +1101,28 @@ async fn list_escalations_by_request(
 )]
 async fn resolve_escalation(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Supervisor, ActorRole::Dispatcher]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "supervisor", "dispatcher"]) {
+        return r;
     }
-    match state.escalation_service.resolve(&id) {
+    let scope = auth.data_scope();
+    match state.escalation_service.resolve(&id, scope.clone()).await {
         Ok(item) => {
-            let _ = state.audit_service.record(
-                Some(item.request_id.clone()),
-                "escalation",
-                "resolve",
-                role_name(parse_role(&headers)),
-                parse_actor_id(&headers),
-                format!("escalation_id={}", item.id),
-            );
+            let audit_owner = item.owner_user_id.clone();
+            let _ = state
+                .audit_service
+                .record(
+                    Some(item.request_id.clone()),
+                    "escalation",
+                    "resolve",
+                    auth.primary_role_for_audit(),
+                    Some(auth.sub.to_string()),
+                    format!("escalation_id={}", item.id),
+                    audit_owner,
+                )
+                .await;
             (StatusCode::OK, Json(item)).into_response()
         }
         Err(e) => domain_error_to_response(e),
@@ -964,28 +1145,34 @@ async fn resolve_escalation(
 )]
 async fn escalate_overdue_requests(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Supervisor, ActorRole::Dispatcher]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "supervisor", "dispatcher"]) {
+        return r;
     }
     let created = match state
         .sla_service
         .auto_escalate_overdue(now_epoch(), "Automatic SLA overdue escalation")
+        .await
     {
         Ok(v) => v,
         Err(e) => return domain_error_to_response(e),
     };
 
     for esc in &created {
-        let _ = state.audit_service.record(
-            Some(esc.request_id.clone()),
-            "escalation",
-            "auto_create_overdue",
-            role_name(parse_role(&headers)),
-            parse_actor_id(&headers),
-            format!("escalation_id={}", esc.id),
-        );
+        let audit_owner = esc.owner_user_id.clone();
+        let _ = state
+            .audit_service
+            .record(
+                Some(esc.request_id.clone()),
+                "escalation",
+                "auto_create_overdue",
+                auth.primary_role_for_audit(),
+                Some(auth.sub.to_string()),
+                format!("escalation_id={}", esc.id),
+                audit_owner,
+            )
+            .await;
     }
 
     (
@@ -1014,26 +1201,32 @@ async fn escalate_overdue_requests(
 )]
 async fn create_technician(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Json(body): Json<CreateTechnicianRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(&headers, &[ActorRole::Supervisor]) {
-        return response;
+    if let Err(r) = require_roles(&auth, &["admin", "supervisor"]) {
+        return r;
     }
     let id = format!("tech-{}", Uuid::new_v4().simple());
+    let owner = auth.sub.to_string();
     match state
         .technician_service
-        .create(id, body.full_name, body.skills)
+        .create(id, body.full_name, body.skills, owner.clone())
+        .await
     {
         Ok(item) => {
-            let _ = state.audit_service.record(
-                None,
-                "technician",
-                "create",
-                role_name(parse_role(&headers)),
-                parse_actor_id(&headers),
-                format!("technician_id={}", item.id),
-            );
+            let _ = state
+                .audit_service
+                .record(
+                    None,
+                    "technician",
+                    "create",
+                    auth.primary_role_for_audit(),
+                    Some(auth.sub.to_string()),
+                    format!("technician_id={}", item.id),
+                    owner,
+                )
+                .await;
             (StatusCode::CREATED, Json(item)).into_response()
         }
         Err(e) => domain_error_to_response(e),
@@ -1052,9 +1245,11 @@ async fn create_technician(
 )]
 async fn list_technicians(
     State(state): State<AppState>,
+    auth: JwtAuth,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    match state.technician_service.list() {
+    let scope = auth.data_scope();
+    match state.technician_service.list(scope).await {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
         Err(e) => domain_error_to_response(e),
     }
@@ -1075,10 +1270,12 @@ async fn list_technicians(
 )]
 async fn list_request_audit(
     State(state): State<AppState>,
+    auth: JwtAuth,
     Path(id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    match state.audit_service.list_by_request(&id) {
+    let scope = auth.data_scope();
+    match state.audit_service.list_by_request(&id, scope).await {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
         Err(e) => domain_error_to_response(e),
     }
@@ -1100,22 +1297,26 @@ async fn list_request_audit(
 )]
 async fn get_dashboard_summary(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(
-        &headers,
+    if let Err(r) = require_roles(
+        &auth,
         &[
-            ActorRole::Supervisor,
-            ActorRole::Dispatcher,
-            ActorRole::Viewer,
-            ActorRole::Technician,
+            "admin",
+            "supervisor",
+            "dispatcher",
+            "viewer",
+            "technician",
+            "user",
         ],
     ) {
-        return response;
+        return r;
     }
+    let scope = auth.data_scope();
     match state
         .analytics_snapshot_service
-        .get_dashboard_summary(now_epoch())
+        .get_dashboard_summary(now_epoch(), scope)
+        .await
     {
         Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
         Err(e) => domain_error_to_response(e),
@@ -1139,23 +1340,27 @@ async fn get_dashboard_summary(
 )]
 async fn get_technician_workload_summary(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(
-        &headers,
+    if let Err(r) = require_roles(
+        &auth,
         &[
-            ActorRole::Supervisor,
-            ActorRole::Dispatcher,
-            ActorRole::Viewer,
-            ActorRole::Technician,
+            "admin",
+            "supervisor",
+            "dispatcher",
+            "viewer",
+            "technician",
+            "user",
         ],
     ) {
-        return response;
+        return r;
     }
+    let scope = auth.data_scope();
     match state
         .analytics_snapshot_service
-        .get_technician_workload_summary(now_epoch())
+        .get_technician_workload_summary(now_epoch(), scope)
+        .await
     {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset))).into_response(),
         Err(e) => domain_error_to_response(e),
@@ -1178,22 +1383,26 @@ async fn get_technician_workload_summary(
 )]
 async fn get_sla_compliance_summary(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(
-        &headers,
+    if let Err(r) = require_roles(
+        &auth,
         &[
-            ActorRole::Supervisor,
-            ActorRole::Dispatcher,
-            ActorRole::Viewer,
-            ActorRole::Technician,
+            "admin",
+            "supervisor",
+            "dispatcher",
+            "viewer",
+            "technician",
+            "user",
         ],
     ) {
-        return response;
+        return r;
     }
+    let scope = auth.data_scope();
     match state
         .analytics_snapshot_service
-        .get_sla_compliance_summary(now_epoch())
+        .get_sla_compliance_summary(now_epoch(), scope)
+        .await
     {
         Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
         Err(e) => domain_error_to_response(e),
@@ -1217,23 +1426,27 @@ async fn get_sla_compliance_summary(
 )]
 async fn get_sla_compliance_by_priority_summary(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: JwtAuth,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    if let Err(response) = authorize(
-        &headers,
+    if let Err(r) = require_roles(
+        &auth,
         &[
-            ActorRole::Supervisor,
-            ActorRole::Dispatcher,
-            ActorRole::Viewer,
-            ActorRole::Technician,
+            "admin",
+            "supervisor",
+            "dispatcher",
+            "viewer",
+            "technician",
+            "user",
         ],
     ) {
-        return response;
+        return r;
     }
+    let scope = auth.data_scope();
     match state
         .analytics_snapshot_service
-        .get_sla_compliance_by_priority_summary(now_epoch())
+        .get_sla_compliance_by_priority_summary(now_epoch(), scope)
+        .await
     {
         Ok(items) => (StatusCode::OK, Json(apply_pagination(items, query.limit, query.offset)))
             .into_response(),
@@ -1246,10 +1459,11 @@ async fn get_sla_compliance_by_priority_summary(
     info(
         title = "Service Processes API",
         version = "0.1.0",
-        description = "REST API сервисных заявок: активы, заявки, наряды, эскалации, SLA и дашборды. Для большинства операций нужен заголовок `x-role` (dispatcher, technician, supervisor, viewer); для роли technician при ряде операций обязателен `x-actor-id`."
+        description = "REST API сервисных заявок. Аутентификация: POST /auth/login, далее заголовок `Authorization: Bearer <JWT>`. Роли в токене: admin, dispatcher, supervisor, technician, viewer, user. Администратор видит все записи; остальные — только сущности со своим owner_user_id."
     ),
     paths(
         health,
+        login,
         create_asset,
         list_assets,
         get_asset,
@@ -1279,6 +1493,7 @@ async fn get_sla_compliance_by_priority_summary(
     ),
     tags(
         (name = "health", description = "Проверка доступности"),
+        (name = "auth", description = "JWT: вход и выдача токена"),
         (name = "assets", description = "Активы"),
         (name = "requests", description = "Сервисные заявки"),
         (name = "work-orders", description = "Наряды на работы"),
@@ -1303,17 +1518,6 @@ fn parse_status(raw: &str) -> Option<RequestStatus> {
     }
 }
 
-fn parse_role(headers: &HeaderMap) -> Option<ActorRole> {
-    let raw = headers.get("x-role")?.to_str().ok()?.trim().to_ascii_lowercase();
-    match raw.as_str() {
-        "dispatcher" => Some(ActorRole::Dispatcher),
-        "technician" => Some(ActorRole::Technician),
-        "supervisor" => Some(ActorRole::Supervisor),
-        "viewer" => Some(ActorRole::Viewer),
-        _ => None,
-    }
-}
-
 fn now_epoch() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1327,22 +1531,13 @@ fn apply_pagination<T>(items: Vec<T>, limit: Option<usize>, offset: Option<usize
     items.into_iter().skip(off).take(lim).collect()
 }
 
-fn role_name(role: Option<ActorRole>) -> &'static str {
-    match role {
-        Some(ActorRole::Dispatcher) => "dispatcher",
-        Some(ActorRole::Technician) => "technician",
-        Some(ActorRole::Supervisor) => "supervisor",
-        Some(ActorRole::Viewer) => "viewer",
-        None => "unknown",
-    }
-}
-
 fn domain_error_to_response(error: DomainError) -> axum::response::Response {
     let status = match error {
         DomainError::NotFound(_) => StatusCode::NOT_FOUND,
         DomainError::InvalidTransition => StatusCode::CONFLICT,
         DomainError::EmptyField(_) => StatusCode::BAD_REQUEST,
         DomainError::Forbidden(_) => StatusCode::FORBIDDEN,
+        DomainError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
     };
 
     (

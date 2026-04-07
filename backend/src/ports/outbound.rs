@@ -1,80 +1,120 @@
+use crate::domain::analytics::{
+    AnalyticsSnapshot, DashboardSummary, SlaComplianceByPriorityItem, SlaComplianceSummary,
+    TechnicianWorkloadSummary,
+};
 use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Technician, WorkOrder};
 use crate::domain::errors::DomainError;
-use crate::domain::analytics::{
-    DashboardSummary, SlaComplianceByPriorityItem, SlaComplianceSummary, TechnicianWorkloadSummary,
-    AnalyticsSnapshot,
-};
 use crate::domain::value_objects::Priority;
+use crate::ports::data_scope::DataScope;
+use async_trait::async_trait;
 
-pub trait AssetRepository {
-    fn save(&self, asset: Asset) -> Result<(), DomainError>;
-    fn get_by_id(&self, id: &str) -> Result<Option<Asset>, DomainError>;
-    fn list(&self) -> Result<Vec<Asset>, DomainError>;
+#[async_trait]
+pub trait AssetRepository: Send + Sync {
+    async fn save(&self, asset: Asset) -> Result<(), DomainError>;
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<Asset>, DomainError>;
+    async fn list(&self, scope: DataScope) -> Result<Vec<Asset>, DomainError>;
 }
 
-pub trait ServiceRequestRepository {
-    fn save(&self, request: ServiceRequest) -> Result<(), DomainError>;
-    fn get_by_id(&self, id: &str) -> Result<Option<ServiceRequest>, DomainError>;
-    fn list(&self) -> Result<Vec<ServiceRequest>, DomainError>;
-    fn update(&self, request: ServiceRequest) -> Result<(), DomainError>;
+#[async_trait]
+pub trait ServiceRequestRepository: Send + Sync {
+    async fn save(&self, request: ServiceRequest) -> Result<(), DomainError>;
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<ServiceRequest>, DomainError>;
+    async fn list(&self, scope: DataScope) -> Result<Vec<ServiceRequest>, DomainError>;
+    async fn update(&self, request: ServiceRequest) -> Result<(), DomainError>;
+    /// Eager: заявки с объектом в одном запросе (без N+1 на asset).
+    async fn list_with_assets(
+        &self,
+        scope: DataScope,
+    ) -> Result<Vec<(ServiceRequest, Option<Asset>)>, DomainError>;
 }
 
-pub trait SlaPolicyPort {
+pub trait SlaPolicyPort: Send + Sync {
     fn resolve_sla_minutes(&self, priority: Priority) -> Result<u32, DomainError>;
 }
 
-pub trait PriorityPolicyPort {
+pub trait PriorityPolicyPort: Send + Sync {
     fn resolve_priority(&self, description: &str) -> Result<Priority, DomainError>;
 }
 
-pub trait EventPublisherPort {
-    fn publish(&self, topic: &str, payload: &str) -> Result<(), DomainError>;
+#[async_trait]
+pub trait EventPublisherPort: Send + Sync {
+    async fn publish(&self, topic: &str, payload: &str) -> Result<(), DomainError>;
 }
 
-pub trait WorkOrderRepository {
-    fn save(&self, work_order: WorkOrder) -> Result<(), DomainError>;
-    fn get_by_id(&self, id: &str) -> Result<Option<WorkOrder>, DomainError>;
-    fn list(&self) -> Result<Vec<WorkOrder>, DomainError>;
-    fn list_by_request(&self, request_id: &str) -> Result<Vec<WorkOrder>, DomainError>;
-    fn update(&self, work_order: WorkOrder) -> Result<(), DomainError>;
+#[async_trait]
+pub trait WorkOrderRepository: Send + Sync {
+    async fn save(&self, work_order: WorkOrder) -> Result<(), DomainError>;
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<WorkOrder>, DomainError>;
+    async fn list(&self, scope: DataScope) -> Result<Vec<WorkOrder>, DomainError>;
+    async fn list_by_request(
+        &self,
+        request_id: &str,
+        scope: DataScope,
+    ) -> Result<Vec<WorkOrder>, DomainError>;
+    async fn update(&self, work_order: WorkOrder) -> Result<(), DomainError>;
 }
 
-pub trait EscalationRepository {
-    fn save(&self, escalation: Escalation) -> Result<(), DomainError>;
-    fn get_by_id(&self, id: &str) -> Result<Option<Escalation>, DomainError>;
-    fn list(&self) -> Result<Vec<Escalation>, DomainError>;
-    fn list_by_request(&self, request_id: &str) -> Result<Vec<Escalation>, DomainError>;
-    fn update(&self, escalation: Escalation) -> Result<(), DomainError>;
+#[async_trait]
+pub trait EscalationRepository: Send + Sync {
+    async fn save(&self, escalation: Escalation) -> Result<(), DomainError>;
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<Escalation>, DomainError>;
+    async fn list(&self, scope: DataScope) -> Result<Vec<Escalation>, DomainError>;
+    async fn list_by_request(
+        &self,
+        request_id: &str,
+        scope: DataScope,
+    ) -> Result<Vec<Escalation>, DomainError>;
+    async fn update(&self, escalation: Escalation) -> Result<(), DomainError>;
 }
 
-pub trait TechnicianRepository {
-    fn save(&self, technician: Technician) -> Result<(), DomainError>;
-    fn get_by_id(&self, id: &str) -> Result<Option<Technician>, DomainError>;
-    fn list(&self) -> Result<Vec<Technician>, DomainError>;
+#[async_trait]
+pub trait TechnicianRepository: Send + Sync {
+    async fn save(&self, technician: Technician) -> Result<(), DomainError>;
+    async fn get_by_id(&self, id: &str, scope: DataScope) -> Result<Option<Technician>, DomainError>;
+    async fn list(&self, scope: DataScope) -> Result<Vec<Technician>, DomainError>;
 }
 
-pub trait AuditRepository {
-    fn save(&self, record: AuditRecord) -> Result<(), DomainError>;
-    fn list(&self) -> Result<Vec<AuditRecord>, DomainError>;
-    fn list_by_request(&self, request_id: &str) -> Result<Vec<AuditRecord>, DomainError>;
+#[async_trait]
+pub trait AuditRepository: Send + Sync {
+    async fn save(&self, record: AuditRecord) -> Result<(), DomainError>;
+    async fn list(&self, scope: DataScope) -> Result<Vec<AuditRecord>, DomainError>;
+    async fn list_by_request(
+        &self,
+        request_id: &str,
+        scope: DataScope,
+    ) -> Result<Vec<AuditRecord>, DomainError>;
 }
 
-pub trait AnalyticsQueryPort {
-    fn dashboard_summary(&self, now_epoch: u64) -> Result<DashboardSummary, DomainError>;
-    fn sla_compliance_summary(&self, now_epoch: u64) -> Result<SlaComplianceSummary, DomainError>;
-    fn sla_compliance_by_priority_summary(
+#[async_trait]
+pub trait AnalyticsQueryPort: Send + Sync {
+    async fn dashboard_summary(
         &self,
         now_epoch: u64,
+        scope: DataScope,
+    ) -> Result<DashboardSummary, DomainError>;
+    async fn sla_compliance_summary(
+        &self,
+        now_epoch: u64,
+        scope: DataScope,
+    ) -> Result<SlaComplianceSummary, DomainError>;
+    async fn sla_compliance_by_priority_summary(
+        &self,
+        now_epoch: u64,
+        scope: DataScope,
     ) -> Result<Vec<SlaComplianceByPriorityItem>, DomainError>;
-    fn technician_workload_summary(&self) -> Result<Vec<TechnicianWorkloadSummary>, DomainError>;
+    async fn technician_workload_summary(
+        &self,
+        scope: DataScope,
+    ) -> Result<Vec<TechnicianWorkloadSummary>, DomainError>;
 
-    fn list_requests(&self) -> Result<Vec<ServiceRequest>, DomainError>;
-    fn list_work_orders(&self) -> Result<Vec<WorkOrder>, DomainError>;
-    fn list_escalations(&self) -> Result<Vec<Escalation>, DomainError>;
-    fn list_technicians(&self) -> Result<Vec<Technician>, DomainError>;
+    async fn list_requests(&self, scope: DataScope) -> Result<Vec<ServiceRequest>, DomainError>;
+    async fn list_work_orders(&self, scope: DataScope) -> Result<Vec<WorkOrder>, DomainError>;
+    async fn list_escalations(&self, scope: DataScope) -> Result<Vec<Escalation>, DomainError>;
+    async fn list_technicians(&self, scope: DataScope) -> Result<Vec<Technician>, DomainError>;
 }
 
-pub trait AnalyticsSnapshotRepository {
-    fn get_latest(&self) -> Result<Option<AnalyticsSnapshot>, DomainError>;
-    fn upsert(&self, snapshot: AnalyticsSnapshot) -> Result<(), DomainError>;
+#[async_trait]
+pub trait AnalyticsSnapshotRepository: Send + Sync {
+    async fn get_latest(&self) -> Result<Option<AnalyticsSnapshot>, DomainError>;
+    async fn upsert(&self, snapshot: AnalyticsSnapshot) -> Result<(), DomainError>;
 }
