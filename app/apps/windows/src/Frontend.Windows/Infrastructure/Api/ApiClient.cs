@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using Frontend.Windows.Domain.Dto;
 
+
 namespace Frontend.Windows.Infrastructure.Api;
 
 /// <summary>
@@ -22,7 +23,7 @@ public sealed class ApiClient
     public async Task<bool> CheckHealthAsync(CancellationToken ct = default)
     {
         // Пример: /health -> { "status": "ok" }
-        var dto = await _http.GetFromJsonAsync<HealthDto>("health", ct);
+        var dto = await _http.GetFromJsonAsync<HealthDto>("health", ct);        
         return string.Equals(dto?.Status, "ok", StringComparison.OrdinalIgnoreCase);
     }
 }

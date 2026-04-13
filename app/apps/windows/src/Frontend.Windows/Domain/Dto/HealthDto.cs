@@ -1,7 +1,6 @@
 namespace Frontend.Windows.Domain.Dto;
 
-public sealed record HealthDto(
-    string Status
-);
-
-
+public class HealthDto
+{
+    public string Status { get; set; } = null!;
+}

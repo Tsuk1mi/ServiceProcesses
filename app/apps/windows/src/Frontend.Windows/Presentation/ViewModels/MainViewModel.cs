@@ -1,6 +1,8 @@
 using System;
+using System.Collections.ObjectModel;
 using System.Net.Http;
 using System.Threading.Tasks;
+using Frontend.Windows.Domain.Dto;
 using Frontend.Windows.Infrastructure.Api;
 using Frontend.Windows.Infrastructure.Mvvm;
 using Frontend.Windows.Infrastructure.Notifications;
@@ -13,24 +15,28 @@ public sealed class MainViewModel : ObservableObject
     private readonly NotificationService _notifications;
 
     private string _statusText = "Готово";
+    private bool _isBusy;
+    private bool _isAuthenticated;
 
-    // --- auth view state ---
+    // --- Состояния экранов авторизации ---
     private bool _isLoginView = true;
     private bool _isRegisterView;
     private bool _isRecoverView;
 
-    private bool _isBusy;
+    // --- Данные для управления тикетами ---
+    private TicketDto? _selectedTicket;
+    public ObservableCollection<TicketDto> Tickets { get; set; } = new();
 
-    // --- login ---
+    // --- Поля ввода: Логин ---
     private string? _loginEmail;
     private string? _loginPassword;
 
-    // --- register ---
+    // --- Поля ввода: Регистрация ---
     private string? _registerEmail;
     private string? _registerPassword;
     private string? _registerPasswordConfirm;
 
-    // --- recover ---
+    // --- Поля ввода: Восстановление ---
     private string? _recoverEmail;
 
     public MainViewModel(ApiClient api, NotificationService notifications)
@@ -39,6 +45,17 @@ public sealed class MainViewModel : ObservableObject
         _notifications = notifications;
 
         FooterText = "IDEF0: A0 UI, A1 данные, A2 команды, A3 процессы, A4 уведомления";
+
+        // Команды навигации
+        ShowLoginCommand = new RelayCommand(() => { SetAuthMode(AuthMode.Login); return Task.CompletedTask; });
+        ShowRegisterCommand = new RelayCommand(() => { SetAuthMode(AuthMode.Register); return Task.CompletedTask; });
+        ShowRecoverCommand = new RelayCommand(() => { SetAuthMode(AuthMode.Recover); return Task.CompletedTask; });
+
+        // Команды действий
+        LoginCommand = new RelayCommand(LoginAsync);
+        RegisterCommand = new RelayCommand(RegisterAsync);
+        RecoverCommand = new RelayCommand(RecoverAsync);
+        LogoutCommand = new RelayCommand(Logout);
 
         CheckApiCommand = new RelayCommand(async () =>
         {
@@ -51,75 +68,18 @@ public sealed class MainViewModel : ObservableObject
             }
             catch (HttpRequestException ex)
             {
-                StatusText = "Ошибка сети/сертификата";
+                StatusText = "Ошибка сети";
                 _notifications.Error(ex.Message);
             }
         });
-
-        // Переключение экранов (тоже RelayCommand(Func<Task>))
-        ShowLoginCommand = new RelayCommand(() =>
-        {
-            SetAuthMode(AuthMode.Login);
-            return Task.CompletedTask;
-        });
-
-        ShowRegisterCommand = new RelayCommand(() =>
-        {
-            SetAuthMode(AuthMode.Register);
-            return Task.CompletedTask;
-        });
-
-        ShowRecoverCommand = new RelayCommand(() =>
-        {
-            SetAuthMode(AuthMode.Recover);
-            return Task.CompletedTask;
-        });
-
-        // Действия
-        LoginCommand = new RelayCommand(LoginAsync);
-        RegisterCommand = new RelayCommand(RegisterAsync);
-        RecoverCommand = new RelayCommand(RecoverAsync);
-
-        SetAuthMode(AuthMode.Login);
     }
 
-    // ----- existing -----
-    public string StatusText
+    #region Properties
+
+    public bool IsAuthenticated
     {
-        get => _statusText;
-        private set => SetProperty(ref _statusText, value);
-    }
-
-    public string FooterText { get; }
-
-    public RelayCommand CheckApiCommand { get; }
-
-    // ----- new: commands -----
-    public RelayCommand ShowLoginCommand { get; }
-    public RelayCommand ShowRegisterCommand { get; }
-    public RelayCommand ShowRecoverCommand { get; }
-
-    public RelayCommand LoginCommand { get; }
-    public RelayCommand RegisterCommand { get; }
-    public RelayCommand RecoverCommand { get; }
-
-    // ----- new: flags -----
-    public bool IsLoginView
-    {
-        get => _isLoginView;
-        private set => SetProperty(ref _isLoginView, value);
-    }
-
-    public bool IsRegisterView
-    {
-        get => _isRegisterView;
-        private set => SetProperty(ref _isRegisterView, value);
-    }
-
-    public bool IsRecoverView
-    {
-        get => _isRecoverView;
-        private set => SetProperty(ref _isRecoverView, value);
+        get => _isAuthenticated;
+        private set => SetProperty(ref _isAuthenticated, value);
     }
 
     public bool IsBusy
@@ -128,43 +88,46 @@ public sealed class MainViewModel : ObservableObject
         private set => SetProperty(ref _isBusy, value);
     }
 
-    // ----- new: fields -----
-    public string? LoginEmail
+    public string StatusText
     {
-        get => _loginEmail;
-        set => SetProperty(ref _loginEmail, value);
+        get => _statusText;
+        private set => SetProperty(ref _statusText, value);
     }
 
-    // приходит из PasswordBox в MainWindow.xaml.cs
-    public string? LoginPassword
+    public string FooterText { get; }
+
+    public bool IsLoginView { get => _isLoginView; private set => SetProperty(ref _isLoginView, value); }
+    public bool IsRegisterView { get => _isRegisterView; private set => SetProperty(ref _isRegisterView, value); }
+    public bool IsRecoverView { get => _isRecoverView; private set => SetProperty(ref _isRecoverView, value); }
+
+    public TicketDto? SelectedTicket
     {
-        get => _loginPassword;
-        set => SetProperty(ref _loginPassword, value);
+        get => _selectedTicket;
+        set => SetProperty(ref _selectedTicket, value);
     }
 
-    public string? RegisterEmail
-    {
-        get => _registerEmail;
-        set => SetProperty(ref _registerEmail, value);
-    }
+    // Auth Fields
+    public string? LoginEmail { get => _loginEmail; set => SetProperty(ref _loginEmail, value); }
+    public string? LoginPassword { get => _loginPassword; set => SetProperty(ref _loginPassword, value); }
+    public string? RegisterEmail { get => _registerEmail; set => SetProperty(ref _registerEmail, value); }
+    public string? RegisterPassword { get => _registerPassword; set => SetProperty(ref _registerPassword, value); }
+    public string? RegisterPasswordConfirm { get => _registerPasswordConfirm; set => SetProperty(ref _registerPasswordConfirm, value); }
+    public string? RecoverEmail { get => _recoverEmail; set => SetProperty(ref _recoverEmail, value); }
 
-    public string? RegisterPassword
-    {
-        get => _registerPassword;
-        set => SetProperty(ref _registerPassword, value);
-    }
+    #endregion
 
-    public string? RegisterPasswordConfirm
-    {
-        get => _registerPasswordConfirm;
-        set => SetProperty(ref _registerPasswordConfirm, value);
-    }
+    #region Commands
+    public RelayCommand ShowLoginCommand { get; }
+    public RelayCommand ShowRegisterCommand { get; }
+    public RelayCommand ShowRecoverCommand { get; }
+    public RelayCommand LoginCommand { get; }
+    public RelayCommand RegisterCommand { get; }
+    public RelayCommand RecoverCommand { get; }
+    public RelayCommand LogoutCommand { get; }
+    public RelayCommand CheckApiCommand { get; }
+    #endregion
 
-    public string? RecoverEmail
-    {
-        get => _recoverEmail;
-        set => SetProperty(ref _recoverEmail, value);
-    }
+    #region Logic Methods
 
     private enum AuthMode { Login, Register, Recover }
 
@@ -173,7 +136,6 @@ public sealed class MainViewModel : ObservableObject
         IsLoginView = mode == AuthMode.Login;
         IsRegisterView = mode == AuthMode.Register;
         IsRecoverView = mode == AuthMode.Recover;
-
         StatusText = "Готово";
     }
 
@@ -184,16 +146,9 @@ public sealed class MainViewModel : ObservableObject
         var email = (LoginEmail ?? "").Trim();
         var password = LoginPassword ?? "";
 
-        if (string.IsNullOrWhiteSpace(email))
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
         {
-            StatusText = "Введите email";
-            _notifications.Info(StatusText);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(password))
-        {
-            StatusText = "Введите пароль";
+            StatusText = "Введите логин и пароль";
             _notifications.Info(StatusText);
             return;
         }
@@ -202,22 +157,18 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = true;
             StatusText = "Вход...";
+            await Task.Delay(800); 
 
-            // TODO: подключить реальный метод API, когда появится эндпоинт
-            await Task.Delay(400);
-
-            StatusText = "Успешный вход (заглушка)";
-            _notifications.Info(StatusText);
+            LoadMockData(); // Загружаем данные для макета
+            IsAuthenticated = true;
+            _notifications.Info("Вход выполнен");
         }
         catch (Exception ex)
         {
             StatusText = "Ошибка входа";
             _notifications.Error(ex.Message);
         }
-        finally
-        {
-            IsBusy = false;
-        }
+        finally { IsBusy = false; }
     }
 
     private async Task RegisterAsync()
@@ -228,23 +179,9 @@ public sealed class MainViewModel : ObservableObject
         var password = RegisterPassword ?? "";
         var confirm = RegisterPasswordConfirm ?? "";
 
-        if (string.IsNullOrWhiteSpace(email))
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
         {
-            StatusText = "Введите email";
-            _notifications.Info(StatusText);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(password))
-        {
-            StatusText = "Введите пароль";
-            _notifications.Info(StatusText);
-            return;
-        }
-
-        if (password.Length < 6)
-        {
-            StatusText = "Пароль должен быть не короче 6 символов";
+            StatusText = "Заполните поля регистрации";
             _notifications.Info(StatusText);
             return;
         }
@@ -260,13 +197,10 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = true;
             StatusText = "Регистрация...";
+            await Task.Delay(1000);
 
-            // TODO: подключить реальный метод API
-            await Task.Delay(500);
-
-            StatusText = "Регистрация успешна (заглушка)";
+            StatusText = "Регистрация успешна";
             _notifications.Info(StatusText);
-
             SetAuthMode(AuthMode.Login);
         }
         catch (Exception ex)
@@ -274,46 +208,42 @@ public sealed class MainViewModel : ObservableObject
             StatusText = "Ошибка регистрации";
             _notifications.Error(ex.Message);
         }
-        finally
-        {
-            IsBusy = false;
-        }
+        finally { IsBusy = false; }
     }
 
     private async Task RecoverAsync()
     {
         if (IsBusy) return;
-
-        var email = (RecoverEmail ?? "").Trim();
-
-        if (string.IsNullOrWhiteSpace(email))
-        {
-            StatusText = "Введите email";
-            _notifications.Info(StatusText);
-            return;
-        }
+        if (string.IsNullOrWhiteSpace(RecoverEmail)) { _notifications.Info("Введите email"); return; }
 
         try
         {
             IsBusy = true;
-            StatusText = "Отправка инструкции...";
-
-            // TODO: подключить реальный метод API
-            await Task.Delay(450);
-
-            StatusText = "Инструкция отправлена (заглушка)";
+            StatusText = "Восстановление...";
+            await Task.Delay(500);
+            StatusText = "Инструкция отправлена";
             _notifications.Info(StatusText);
-
             SetAuthMode(AuthMode.Login);
         }
-        catch (Exception ex)
-        {
-            StatusText = "Ошибка восстановления";
-            _notifications.Error(ex.Message);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
+        catch (Exception ex) { _notifications.Error(ex.Message); }
+        finally { IsBusy = false; }
     }
+
+    private void LoadMockData()
+    {
+        Tickets.Clear();
+        Tickets.Add(new TicketDto { Id = "#2313", ObjectName = "Лифт чинить - москва сити", Status = "выполнен", Priority = "высокий", AssignedTo = "Ваня" });
+        Tickets.Add(new TicketDto { Id = "#1231", ObjectName = "Лифт чинить - москва сити", Status = "выполнен", Priority = "высокий", AssignedTo = "Леша" });
+        Tickets.Add(new TicketDto { Id = "#1232", ObjectName = "Замена ламп - башня федерация", Status = "в процессе", Priority = "средний", AssignedTo = "Ваня" });
+    }
+
+    private Task Logout()
+    {
+        IsAuthenticated = false;
+        Tickets.Clear();
+        LoginPassword = "";
+        return Task.CompletedTask;
+    }
+
+    #endregion
 }
