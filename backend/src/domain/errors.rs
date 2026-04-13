@@ -7,6 +7,7 @@ pub enum DomainError {
     InvalidTransition,
     NotFound(&'static str),
     Forbidden(&'static str),
+    Unauthorized(&'static str),
 }
 
 impl Display for DomainError {
@@ -16,6 +17,7 @@ impl Display for DomainError {
             DomainError::InvalidTransition => write!(f, "invalid status transition"),
             DomainError::NotFound(entity) => write!(f, "{entity} not found"),
             DomainError::Forbidden(message) => write!(f, "{message}"),
+            DomainError::Unauthorized(message) => write!(f, "{message}"),
         }
     }
 }

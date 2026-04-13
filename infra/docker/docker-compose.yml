@@ -1,6 +1,57 @@
-version: "3.9"
+# Стек: API, SLA-воркер, воркер очереди (RabbitMQ), Postgres, Redis, RabbitMQ.
+# DATABASE_URL / REDIS_URL / RABBITMQ_URL задаются только через environment сервисов (см. .env.example).
+# Запуск из каталога infra/docker: docker compose up -d --build
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: service-processes-postgres
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: service_processes
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d service_processes"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: service-processes-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: service-processes-rabbitmq
+    environment:
+      # guest разрешён только с localhost; из других контейнеров нужен отдельный пользователь.
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
   backend:
     build:
       context: ../../backend
@@ -10,14 +61,21 @@ services:
       - "8080:8080"
     environment:
       APP_MODE: api
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: service-processes
-      NEXUS_URL: http://nexus:8081
+      JWT_SECRET: change-me-in-production
+      REDIS_URL: redis://redis:6379
+      # vhost по умолчанию «/» в URI — %2F (иначе lapin шлёт пустой vhost).
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/%2F
+      JOB_QUEUE_NAME: service_jobs
+      DATABASE_URL: postgres://app:app@postgres:5432/service_processes
+      RUST_LOG: info,tower_http=debug
     depends_on:
-      - rabbitmq
-      - minio
-      - nexus
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
 
   sla-worker:
     build:
@@ -26,26 +84,49 @@ services:
     container_name: service-processes-sla-worker
     environment:
       APP_MODE: worker
-      WORKER_INTERVAL_SEC: 30
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: service-processes
-      NEXUS_URL: http://nexus:8081
+      WORKER_INTERVAL_SEC: "30"
+      REDIS_URL: redis://redis:6379
+      # vhost по умолчанию «/» в URI — %2F (иначе lapin шлёт пустой vhost).
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/%2F
+      JOB_QUEUE_NAME: service_jobs
+      DATABASE_URL: postgres://app:app@postgres:5432/service_processes
+      RUST_LOG: info
     depends_on:
-      - rabbitmq
-      - minio
-      - nexus
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
 
-  rabbitmq:
-    image: rabbitmq:3.13-management
-    container_name: service-processes-rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
+  queue-worker:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: service-processes-queue-worker
+    environment:
+      APP_MODE: queue_worker
+      REDIS_URL: redis://redis:6379
+      # vhost по умолчанию «/» в URI — %2F (иначе lapin шлёт пустой vhost).
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/%2F
+      JOB_QUEUE_NAME: service_jobs
+      DATABASE_URL: postgres://app:app@postgres:5432/service_processes
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest
     container_name: service-processes-minio
+    profiles:
+      - extras
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minio
@@ -57,5 +138,10 @@ services:
   nexus:
     image: sonatype/nexus3:3.70.1
     container_name: service-processes-nexus
+    profiles:
+      - extras
     ports:
       - "8081:8081"
+
+volumes:
+  pgdata:

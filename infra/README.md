@@ -1,53 +1,35 @@
-# Infrastructure Quick Start
+# Infrastructure
 
-## Локальный запуск (Docker)
+Краткий указатель; подробно — **[`docs/infrastructure-overview.md`](../docs/infrastructure-overview.md)**.
+
+## Docker Compose (основной локальный/демо стек)
 
 ```bash
 cd infra/docker
 docker compose up -d --build
 ```
 
-Поднимаются:
-- backend (`:8080`)
-- sla-worker (фоновая автоэскалация SLA)
-- RabbitMQ (`:5672`, management `:15672`)
-- S3-совместимое хранилище MinIO (`:9000`, console `:9001`)
-- Nexus (`:8081`)
+Поднимаются **Postgres**, **Redis**, **RabbitMQ**, **backend** (API :8080), **sla-worker**, **queue-worker**. Переменные URL заданы в `docker-compose.yml`; для `cargo run` с хоста см. **`infra/docker/sample.env`**.
+
+Профиль `extras`: MinIO, Nexus — `docker compose --profile extras up -d`.
 
 ## Kubernetes
 
-Базовые манифесты находятся в `infra/k8s`:
-- `namespace.yaml`
-- `backend-configmap.yaml`
-- `backend-externalsecret.yaml`
-- `backend-deployment.yaml`
-- `sla-worker-deployment.yaml`
-- `backend-service.yaml`
-- `rabbitmq.yaml`
-- `s3-minio.yaml`
-- `nexus.yaml`
+Манифесты в **`infra/k8s/`**. Для демо без External Secrets:
 
-Пример применения:
+1. `namespace.yaml`
+2. `postgres.yaml`, `redis.yaml`, `rabbitmq.yaml`
+3. `backend-secrets.example.yaml` → как Secret `backend-secrets` (или свой Secret с `DATABASE_URL`, `JWT_SECRET`)
+4. `backend-configmap.yaml`
+5. `backend-deployment.yaml`, `backend-service.yaml`
+6. `sla-worker-deployment.yaml`, `queue-worker-deployment.yaml`
 
-```bash
-kubectl apply -f infra/k8s/namespace.yaml
-kubectl apply -f infra/k8s/
-```
+Не применяйте одновременно **`backend-externalsecret.yaml`** и **`backend-secrets.example.yaml`** с одним именем Secret.
 
-## Kubernetes via Helm (recommended)
-
-Chart расположен в `infra/helm/service-processes`.
-
-Установка:
+## Helm
 
 ```bash
-helm upgrade --install service-processes infra/helm/service-processes
+helm upgrade --install service-processes infra/helm/service-processes -n service-processes --create-namespace
 ```
 
-Переопределение image/tag:
-
-```bash
-helm upgrade --install service-processes infra/helm/service-processes \
-  --set image.repository=nexus.example.local/repository/service-processes/backend \
-  --set image.tag=latest
-```
+В chart включены опционально **Redis** и **queue-worker** (`values.yaml`: `redis.enabled`, `queueWorker.enabled`). Секреты — через `secrets.existingSecretName`.

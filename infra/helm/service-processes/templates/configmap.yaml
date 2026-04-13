@@ -5,7 +5,9 @@ metadata:
   namespace: {{ .Values.namespace }}
 data:
   RUST_LOG: {{ .Values.config.RUST_LOG | quote }}
+  REDIS_URL: {{ .Values.config.REDIS_URL | quote }}
   RABBITMQ_URL: {{ .Values.config.RABBITMQ_URL | quote }}
+  JOB_QUEUE_NAME: {{ .Values.config.JOB_QUEUE_NAME | quote }}
   S3_ENDPOINT: {{ .Values.config.S3_ENDPOINT | quote }}
   S3_BUCKET: {{ .Values.config.S3_BUCKET | quote }}
   NEXUS_URL: {{ .Values.config.NEXUS_URL | quote }}

@@ -8,12 +8,26 @@
 
 1. Запускается **сервер** (Rust backend на порту **8080**).
 2. **Windows (WPF)** или **Android** обращаются к HTTP API, в каркасе — в первую очередь к `GET /health`.
+3. Операции с данными (`/api/v1/...`) требуют **JWT**: сначала `POST /auth/login`, затем заголовок `Authorization: Bearer <token>`.
 
-Сейчас endpoint `GET /health` отвечает **JSON**:
+Сейчас `GET /health` отвечает **JSON**:
 
 ```json
 { "status": "ok" }
 ```
+
+Полный стек в Docker (Postgres, Redis, RabbitMQ, воркеры): см. **`docs/server-stack.md`** и `infra/docker/docker-compose.yml`.
+
+### 1.1 Docker: БД и брокеры (рекомендуется для прод-подобного режима)
+
+Из каталога `infra/docker`:
+
+```powershell
+cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\infra\docker
+docker compose up -d --build
+```
+
+В контейнерах задаётся **`DATABASE_URL=postgres://app:app@postgres:5432/service_processes`**, плюс **`REDIS_URL`**, **`RABBITMQ_URL`**. API в этом режиме хранит данные в Postgres, кэширует ответы **GET `/api/v1/*`** в Redis, публикует доменные события в exchange **`service_processes.events`** (RabbitMQ), а фоновые задачи (`POST /api/v1/jobs`) идут в очередь **`service_jobs`**. Локальный пример переменных для `cargo run` без Docker: `infra/docker/sample.env`.
 
 ---
 
@@ -47,12 +61,30 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 
 ## 3. Запуск сервера (обязательно первым)
 
-Из корня репозитория (или папки `backend`):
+### Вариант A: только backend (in-memory, без Postgres)
+
+Из папки `backend`:
 
 ```powershell
 cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\backend
 cargo run
 ```
+
+Если задать **`REDIS_URL`** и **`RABBITMQ_URL`** (например, после `docker compose up` пробросить порты), включатся кэш GET, события в RabbitMQ и `/api/v1/jobs`.
+
+### Вариант B: Postgres + Redis + RabbitMQ (как в Docker)
+
+Поднимите стек (см. §1.1), затем с теми же URL из `infra/docker/sample.env` (хост `localhost` вместо имён сервисов):
+
+```powershell
+cd C:\Users\Tsukimi\RustroverProjects\ServiceProcesses\backend
+$env:DATABASE_URL = "postgres://app:app@localhost:5432/service_processes"
+$env:REDIS_URL = "redis://localhost:6379"
+$env:RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
+cargo run
+```
+
+При **непустом `DATABASE_URL`** Redis и RabbitMQ для API **обязательны**.
 
 Ожидаемый вывод в консоли: сервер слушает `0.0.0.0:8080`. Локально с клиента используйте базовый URL:
 
@@ -65,6 +97,21 @@ Invoke-RestMethod -Uri "http://localhost:8080/health"
 ```
 
 Должен вернуться объект с полем `status: ok`.
+
+### 3.1 Вход (JWT) и вызов защищённого API
+
+Демо-пользователи (см. `backend/README.md`): например `admin` / `admin`.
+
+```powershell
+$base = "http://localhost:8080"
+$login = Invoke-RestMethod -Uri "$base/auth/login" -Method Post -ContentType "application/json" `
+  -Body '{"username":"admin","password":"admin"}'
+$token = $login.access_token
+$headers = @{ Authorization = "Bearer $token" }
+Invoke-RestMethod -Uri "$base/api/v1/assets" -Headers $headers
+```
+
+Опционально для фоновых задач нужны **Redis** и **RabbitMQ** (переменные `REDIS_URL`, `RABBITMQ_URL` при `cargo run`). Иначе `POST /api/v1/jobs` вернёт 503 — для проверки `GET /health` и списка активов этого достаточно.
 
 ---
 
@@ -163,7 +210,7 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 | Симптом | Что проверить |
 |---------|----------------|
-| Windows: «API недоступен» / ошибка сети | Запущен ли `cargo run`, не блокирует ли порт 8090 другой процесс, верен ли `SERVICE_PROCESSES_API_BASE_URL` |
+| Windows: «API недоступен» / ошибка сети | Запущен ли `cargo run`, не блокирует ли порт **8080** другой процесс, верен ли `SERVICE_PROCESSES_API_BASE_URL` |
 | Android: таймаут | Backend запущен, IP/10.0.2.2 верный, Wi‑Fi тот же, cleartext и разрешение INTERNET |
 | Windows: ошибки NuGet | Актуальный `nuget.config`, доступ в интернет или корп. Nexus |
 | Android: SDK not found | Переменная `ANDROID_HOME`, установка platform-tools через SDK Manager |
@@ -172,5 +219,5 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 ## 7. Что дальше (по коду клиентов)
 
-- Windows: заменить заглушки входа/регистрации в `MainViewModel` на реальные вызовы API (когда появятся эндпоинты), централизовать заголовки `x-role` / `x-actor-id` в `ApiClient` (см. `docs\api\backend-api.md`).
-- Android: вынести базовый URL в `buildTypes` / product flavors (dev/stage/prod), добавить OkHttp/Retrofit и модели DTO по контрактам API.
+- Windows: подключить к `POST /auth/login` сохранение `access_token` и подстановку заголовка **`Authorization: Bearer …`** в `ApiClient` для всех запросов к `/api/v1/*` (вместо устаревших `x-role` / `x-actor-id`). См. `docs\api\backend-api.md` и Swagger `http://localhost:8080/swagger-ui/`.
+- Android: то же для OkHttp interceptor; вынести базовый URL в `buildTypes` / product flavors (dev/stage/prod).

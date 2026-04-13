@@ -5,7 +5,9 @@ metadata:
   namespace: service-processes
 data:
   RUST_LOG: info
-  RABBITMQ_URL: amqp://rabbitmq.service-processes.svc.cluster.local:5672
+  REDIS_URL: redis://redis:6379
+  RABBITMQ_URL: amqp://app:app@rabbitmq:5672
+  JOB_QUEUE_NAME: service_jobs
   S3_ENDPOINT: http://s3.service-processes.svc.cluster.local:9000
   S3_BUCKET: service-processes
   NEXUS_URL: http://nexus.service-processes.svc.cluster.local:8081

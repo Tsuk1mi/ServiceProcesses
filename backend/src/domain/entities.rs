@@ -4,18 +4,27 @@ use crate::domain::value_objects::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Asset {
     pub id: String,
     pub kind: String,
     pub title: String,
     pub location: String,
     pub state: AssetState,
+    /// Владелец записи (UUID пользователя). RBAC: не-admin видит только свои сущности.
+    pub owner_user_id: String,
 }
 
 impl Asset {
-    pub fn new(id: String, kind: String, title: String, location: String) -> Result<Self, DomainError> {
+    pub fn new(
+        id: String,
+        kind: String,
+        title: String,
+        location: String,
+        owner_user_id: String,
+    ) -> Result<Self, DomainError> {
         if id.trim().is_empty() {
             return Err(DomainError::EmptyField("id"));
         }
@@ -28,6 +37,9 @@ impl Asset {
         if location.trim().is_empty() {
             return Err(DomainError::EmptyField("location"));
         }
+        if owner_user_id.trim().is_empty() {
+            return Err(DomainError::EmptyField("owner_user_id"));
+        }
 
         Ok(Self {
             id,
@@ -35,11 +47,12 @@ impl Asset {
             title,
             location,
             state: AssetState::Active,
+            owner_user_id,
         })
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServiceRequest {
     pub id: String,
     pub asset_id: String,
@@ -48,6 +61,7 @@ pub struct ServiceRequest {
     pub status: RequestStatus,
     pub sla_minutes: u32,
     pub created_at_epoch_sec: u64,
+    pub owner_user_id: String,
 }
 
 impl ServiceRequest {
@@ -57,6 +71,7 @@ impl ServiceRequest {
         description: String,
         priority: Priority,
         sla_minutes: u32,
+        owner_user_id: String,
     ) -> Result<Self, DomainError> {
         if id.trim().is_empty() {
             return Err(DomainError::EmptyField("id"));
@@ -70,6 +85,9 @@ impl ServiceRequest {
         if sla_minutes == 0 {
             return Err(DomainError::EmptyField("sla_minutes"));
         }
+        if owner_user_id.trim().is_empty() {
+            return Err(DomainError::EmptyField("owner_user_id"));
+        }
 
         Ok(Self {
             id,
@@ -82,6 +100,7 @@ impl ServiceRequest {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            owner_user_id,
         })
     }
 
@@ -108,21 +127,25 @@ impl ServiceRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkOrder {
     pub id: String,
     pub request_id: String,
     pub assignee: Option<String>,
     pub status: WorkOrderStatus,
+    pub owner_user_id: String,
 }
 
 impl WorkOrder {
-    pub fn new(id: String, request_id: String) -> Result<Self, DomainError> {
+    pub fn new(id: String, request_id: String, owner_user_id: String) -> Result<Self, DomainError> {
         if id.trim().is_empty() {
             return Err(DomainError::EmptyField("id"));
         }
         if request_id.trim().is_empty() {
             return Err(DomainError::EmptyField("request_id"));
+        }
+        if owner_user_id.trim().is_empty() {
+            return Err(DomainError::EmptyField("owner_user_id"));
         }
 
         Ok(Self {
@@ -130,6 +153,7 @@ impl WorkOrder {
             request_id,
             assignee: None,
             status: WorkOrderStatus::Created,
+            owner_user_id,
         })
     }
 
@@ -159,23 +183,25 @@ impl WorkOrder {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Escalation {
     pub id: String,
     pub request_id: String,
     pub reason: String,
     pub state: EscalationState,
+    pub owner_user_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Technician {
     pub id: String,
     pub full_name: String,
     pub skills: Vec<String>,
     pub is_active: bool,
+    pub owner_user_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuditRecord {
     pub id: String,
     pub request_id: Option<String>,
@@ -185,6 +211,7 @@ pub struct AuditRecord {
     pub actor_id: Option<String>,
     pub details: String,
     pub created_at_utc: String,
+    pub owner_user_id: String,
 }
 
 impl AuditRecord {
@@ -198,6 +225,7 @@ impl AuditRecord {
         actor_id: Option<String>,
         details: String,
         created_at_utc: String,
+        owner_user_id: String,
     ) -> Result<Self, DomainError> {
         if id.trim().is_empty() {
             return Err(DomainError::EmptyField("id"));
@@ -217,6 +245,9 @@ impl AuditRecord {
         if created_at_utc.trim().is_empty() {
             return Err(DomainError::EmptyField("created_at_utc"));
         }
+        if owner_user_id.trim().is_empty() {
+            return Err(DomainError::EmptyField("owner_user_id"));
+        }
 
         Ok(Self {
             id,
@@ -227,12 +258,18 @@ impl AuditRecord {
             actor_id,
             details,
             created_at_utc,
+            owner_user_id,
         })
     }
 }
 
 impl Technician {
-    pub fn new(id: String, full_name: String, skills: Vec<String>) -> Result<Self, DomainError> {
+    pub fn new(
+        id: String,
+        full_name: String,
+        skills: Vec<String>,
+        owner_user_id: String,
+    ) -> Result<Self, DomainError> {
         if id.trim().is_empty() {
             return Err(DomainError::EmptyField("id"));
         }
@@ -242,18 +279,27 @@ impl Technician {
         if skills.is_empty() {
             return Err(DomainError::EmptyField("skills"));
         }
+        if owner_user_id.trim().is_empty() {
+            return Err(DomainError::EmptyField("owner_user_id"));
+        }
 
         Ok(Self {
             id,
             full_name,
             skills,
             is_active: true,
+            owner_user_id,
         })
     }
 }
 
 impl Escalation {
-    pub fn new(id: String, request_id: String, reason: String) -> Result<Self, DomainError> {
+    pub fn new(
+        id: String,
+        request_id: String,
+        reason: String,
+        owner_user_id: String,
+    ) -> Result<Self, DomainError> {
         if id.trim().is_empty() {
             return Err(DomainError::EmptyField("id"));
         }
@@ -263,12 +309,16 @@ impl Escalation {
         if reason.trim().is_empty() {
             return Err(DomainError::EmptyField("reason"));
         }
+        if owner_user_id.trim().is_empty() {
+            return Err(DomainError::EmptyField("owner_user_id"));
+        }
 
         Ok(Self {
             id,
             request_id,
             reason,
             state: EscalationState::Open,
+            owner_user_id,
         })
     }
 

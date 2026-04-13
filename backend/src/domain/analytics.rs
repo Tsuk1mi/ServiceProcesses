@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DashboardSummary {
     pub total_requests: usize,
     pub open_requests: usize,
@@ -13,7 +14,7 @@ pub struct DashboardSummary {
     pub open_escalations: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SlaComplianceSummary {
     pub total_open_requests: usize,
     pub overdue_open_requests: usize,
@@ -21,7 +22,7 @@ pub struct SlaComplianceSummary {
     pub compliance_percent: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SlaComplianceByPriorityItem {
     pub priority: String,
     pub total_open_requests: usize,
@@ -30,7 +31,7 @@ pub struct SlaComplianceByPriorityItem {
     pub compliance_percent: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TechnicianWorkloadSummary {
     pub technician_id: String,
     pub full_name: String,
@@ -40,7 +41,7 @@ pub struct TechnicianWorkloadSummary {
     pub total: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AnalyticsSnapshot {
     pub updated_at_epoch_sec: u64,
     pub dashboard: DashboardSummary,
