@@ -6,6 +6,7 @@ use crate::ports::data_scope::DataScope;
 pub struct AuthUser {
     pub sub: Uuid,
     pub roles: Vec<String>,
+    pub session_id: Option<Uuid>,
 }
 
 impl AuthUser {

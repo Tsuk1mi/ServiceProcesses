@@ -16,5 +16,6 @@ pub fn system_admin_actor() -> AuthUser {
     AuthUser {
         sub: uuid::Uuid::nil(),
         roles: vec!["admin".to_string()],
+        session_id: None,
     }
 }

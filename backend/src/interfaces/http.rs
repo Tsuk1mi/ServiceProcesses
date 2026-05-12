@@ -20,7 +20,9 @@ use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
-use crate::auth::{sign_token, verify_token, AuthUser, UserStore};
+use crate::auth::{
+    AuthIdentity, AuthUser, RefreshSessionStore, UserStore, sign_access_token, verify_access_token,
+};
 
 use crate::application::audit_service::AuditAppService;
 use crate::application::escalation_service::EscalationAppService;
@@ -37,12 +39,19 @@ use crate::domain::entities::{Asset, AuditRecord, Escalation, ServiceRequest, Te
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::RequestStatus;
 use crate::infrastructure::jobs::JobClient;
+use crate::infrastructure::metrics::AppMetrics;
 use crate::infrastructure::redis_cache::RedisCache;
 use crate::ports::inbound::{CreateRequestCommand, ServiceRequestUseCase};
 use crate::ports::outbound::{
     AssetRepository, AuditRepository, EscalationRepository, ServiceRequestRepository, TechnicianRepository,
     WorkOrderRepository,
 };
+use crate::query::ReadModelQueryPort;
+
+mod bff_routes;
+mod command_routes;
+mod query_routes;
+mod security;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -59,13 +68,18 @@ pub struct AppState {
     pub audit_service: AuditAppService,
     pub sla_service: SlaAppService,
     pub reporting_service: ReportingAppService,
+    pub query_models: Arc<dyn ReadModelQueryPort>,
     pub analytics_snapshot_service: AnalyticsSnapshotAppService,
     pub jwt_secret: Arc<String>,
+    pub access_token_ttl_seconds: i64,
+    pub refresh_token_ttl_seconds: i64,
     pub users: Arc<dyn UserStore>,
+    pub sessions: Arc<dyn RefreshSessionStore>,
     /// RabbitMQ + Redis; если `None`, эндпоинты задач отвечают 503.
     pub jobs: Option<Arc<JobClient>>,
     /// Кэш GET `/api/v1/*` в Redis (при наличии `REDIS_URL` вместе с RabbitMQ).
     pub redis_cache: Option<Arc<RedisCache>>,
+    pub metrics: AppMetrics,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -115,8 +129,22 @@ pub struct LoginRequest {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LoginResponse {
     pub access_token: String,
+    pub refresh_token: String,
     pub token_type: String,
     pub expires_in: i64,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RefreshRequest {
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MeResponse {
+    pub subject_id: String,
+    pub username: String,
+    pub roles: Vec<String>,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -277,6 +305,9 @@ pub fn router(state: AppState) -> Router {
     let public = Router::new()
         .route("/health", get(health))
         .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/auth/me", get(me))
+        .route("/auth/refresh", post(refresh_token))
         .with_state(state.clone());
 
     let api = Router::new()
@@ -321,6 +352,9 @@ pub fn router(state: AppState) -> Router {
             cache_mw_state,
             redis_http_cache_middleware,
         ));
+    let command_api = command_routes::router().with_state(state.clone());
+    let query_api = query_routes::router().with_state(state.clone());
+    let bff_api = bff_routes::router().with_state(state.clone());
 
     Router::new()
         .merge(
@@ -328,7 +362,12 @@ pub fn router(state: AppState) -> Router {
         )
         .merge(public)
         .merge(api)
+        .merge(command_api)
+        .merge(query_api)
+        .merge(bff_api)
+        .layer(middleware::from_fn(security::rate_limit_middleware))
         .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()))
+        .layer(security::build_cors_layer())
 }
 
 #[utoipa::path(
@@ -354,33 +393,60 @@ async fn health() -> Json<HealthResponse> {
     )
 )]
 async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) -> impl IntoResponse {
-    let Some(user) = state.users.verify(&body.username, &body.password).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                message: "invalid credentials".to_string(),
-            }),
-        )
-            .into_response();
-    };
-    let ttl = 24;
-    match sign_token(state.jwt_secret.as_str(), &user, ttl) {
-        Ok(token) => (
+    match issue_tokens_from_credentials(&state, &body.username, &body.password, "api").await {
+        Ok(tokens) => (
             StatusCode::OK,
             Json(LoginResponse {
-                access_token: token,
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
                 token_type: "Bearer".to_string(),
-                expires_in: ttl * 3600,
+                expires_in: tokens.expires_in,
             }),
         )
             .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                message: "token issue failed".to_string(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn refresh_token(
+    State(state): State<AppState>,
+    Json(body): Json<RefreshRequest>,
+) -> impl IntoResponse {
+    match issue_tokens_from_refresh(&state, &body.refresh_token).await {
+        Ok(tokens) => (
+            StatusCode::OK,
+            Json(LoginResponse {
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
+                token_type: "Bearer".to_string(),
+                expires_in: tokens.expires_in,
             }),
         )
             .into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn logout(State(state): State<AppState>, auth: JwtAuth) -> impl IntoResponse {
+    match revoke_current_session(&state, &auth.0).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn me(State(state): State<AppState>, auth: JwtAuth) -> impl IntoResponse {
+    match current_identity(&state, &auth.0).await {
+        Ok(identity) => (
+            StatusCode::OK,
+            Json(MeResponse {
+                subject_id: identity.auth.sub.to_string(),
+                username: identity.username,
+                roles: identity.auth.roles,
+                session_id: auth.session_id.map(|value| value.to_string()),
+            }),
+        )
+            .into_response(),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -1156,6 +1222,139 @@ async fn complete_work_order(
     }
 }
 
+pub(crate) struct AuthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
+    pub identity: AuthIdentity,
+}
+
+pub(crate) enum AuthApiError {
+    Unauthorized(&'static str),
+    BadRequest(&'static str),
+    Internal(&'static str),
+}
+
+impl AuthApiError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, message) = match self {
+            Self::Unauthorized(message) => (StatusCode::UNAUTHORIZED, message),
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+        };
+        (
+            status,
+            Json(ErrorResponse {
+                message: message.to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
+
+pub(crate) async fn issue_tokens_from_credentials(
+    state: &AppState,
+    username: &str,
+    password: &str,
+    client: &str,
+) -> Result<AuthTokens, AuthApiError> {
+    let identity = state
+        .users
+        .verify(username, password)
+        .await
+        .ok_or(AuthApiError::Unauthorized("invalid credentials"))?;
+    issue_tokens_for_identity(state, identity, client).await
+}
+
+pub(crate) async fn issue_tokens_for_identity(
+    state: &AppState,
+    identity: AuthIdentity,
+    client: &str,
+) -> Result<AuthTokens, AuthApiError> {
+    let issued = state
+        .sessions
+        .issue_session(identity.auth.sub, client, state.refresh_token_ttl_seconds)
+        .await
+        .map_err(|_| AuthApiError::Internal("session issue failed"))?;
+
+    let mut access_user = identity.auth.clone();
+    access_user.session_id = Some(issued.session.session_id);
+    let access_token = sign_access_token(
+        state.jwt_secret.as_str(),
+        &access_user,
+        state.access_token_ttl_seconds,
+    )
+    .map_err(|_| AuthApiError::Internal("token issue failed"))?;
+
+    Ok(AuthTokens {
+        access_token,
+        refresh_token: issued.refresh_token,
+        expires_in: state.access_token_ttl_seconds,
+        identity,
+    })
+}
+
+pub(crate) async fn issue_tokens_from_refresh(
+    state: &AppState,
+    refresh_token: &str,
+) -> Result<AuthTokens, AuthApiError> {
+    let issued = state
+        .sessions
+        .refresh_session(refresh_token, state.refresh_token_ttl_seconds)
+        .await
+        .map_err(|error| match error {
+            DomainError::Unauthorized(message) => AuthApiError::Unauthorized(message),
+            _ => AuthApiError::Internal("token refresh failed"),
+        })?;
+
+    let identity = state
+        .users
+        .find_by_subject(issued.session.user_subject_id)
+        .await
+        .ok_or(AuthApiError::Unauthorized("user is not available"))?;
+
+    let mut access_user = identity.auth.clone();
+    access_user.session_id = Some(issued.session.session_id);
+    let access_token = sign_access_token(
+        state.jwt_secret.as_str(),
+        &access_user,
+        state.access_token_ttl_seconds,
+    )
+    .map_err(|_| AuthApiError::Internal("token refresh failed"))?;
+
+    Ok(AuthTokens {
+        access_token,
+        refresh_token: issued.refresh_token,
+        expires_in: state.access_token_ttl_seconds,
+        identity,
+    })
+}
+
+pub(crate) async fn current_identity(
+    state: &AppState,
+    auth: &AuthUser,
+) -> Result<AuthIdentity, AuthApiError> {
+    state
+        .users
+        .find_by_subject(auth.sub)
+        .await
+        .ok_or(AuthApiError::Unauthorized("user is not available"))
+}
+
+pub(crate) async fn revoke_current_session(
+    state: &AppState,
+    auth: &AuthUser,
+) -> Result<(), AuthApiError> {
+    let session_id = auth
+        .session_id
+        .ok_or(AuthApiError::BadRequest("session is not attached to token"))?;
+    state
+        .sessions
+        .revoke_session(session_id)
+        .await
+        .map_err(|_| AuthApiError::Internal("logout failed"))
+}
+
 /// Обёртка для извлечения JWT из запроса (обход правил сирот для `FromRequestParts`).
 #[derive(Clone, Debug)]
 pub struct JwtAuth(pub AuthUser);
@@ -1198,7 +1397,7 @@ impl FromRequestParts<AppState> for JwtAuth {
                 )
             })?;
 
-        let user = verify_token(state.jwt_secret.as_str(), token.trim()).map_err(|_| {
+        let user = verify_access_token(state.jwt_secret.as_str(), token.trim()).map_err(|_| {
             (
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
@@ -1210,7 +1409,7 @@ impl FromRequestParts<AppState> for JwtAuth {
     }
 }
 
-fn require_roles(auth: &JwtAuth, allowed: &[&str]) -> Result<(), axum::response::Response> {
+pub(crate) fn require_roles(auth: &JwtAuth, allowed: &[&str]) -> Result<(), axum::response::Response> {
     if auth.0.has_any_role(allowed) {
         return Ok(());
     }
@@ -1787,7 +1986,7 @@ impl Modify for SecurityAddon {
 )]
 pub struct ApiDoc;
 
-fn parse_status(raw: &str) -> Option<RequestStatus> {
+pub(crate) fn parse_status(raw: &str) -> Option<RequestStatus> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "new" => Some(RequestStatus::New),
         "planned" => Some(RequestStatus::Planned),
@@ -1799,7 +1998,7 @@ fn parse_status(raw: &str) -> Option<RequestStatus> {
     }
 }
 
-fn now_epoch() -> u64 {
+pub(crate) fn now_epoch() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1812,12 +2011,13 @@ fn apply_pagination<T>(items: Vec<T>, limit: Option<usize>, offset: Option<usize
     items.into_iter().skip(off).take(lim).collect()
 }
 
-fn domain_error_to_response(error: DomainError) -> axum::response::Response {
+pub(crate) fn domain_error_to_response(error: DomainError) -> axum::response::Response {
     tracing::warn!(error = %error, "domain error mapped to http response");
     let status = match error {
         DomainError::NotFound(_) => StatusCode::NOT_FOUND,
         DomainError::InvalidTransition => StatusCode::CONFLICT,
         DomainError::EmptyField(_) => StatusCode::BAD_REQUEST,
+        DomainError::InvalidInput(_) => StatusCode::BAD_REQUEST,
         DomainError::Forbidden(_) => StatusCode::FORBIDDEN,
         DomainError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
     };

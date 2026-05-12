@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Frontend.Windows.Domain.Dto;
 
@@ -22,9 +23,46 @@ public sealed class ApiClient
 
     public async Task<bool> CheckHealthAsync(CancellationToken ct = default)
     {
-        // Пример: /health -> { "status": "ok" }
-        var dto = await _http.GetFromJsonAsync<HealthDto>("health", ct);        
+        var dto = await _http.GetFromJsonAsync<HealthDto>("api/v1/bff/desktop/health", ct);
         return string.Equals(dto?.Status, "ok", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public async Task<LoginResponseDto?> LoginAsync(string username, string password, CancellationToken ct = default)
+    {
+        var response = await _http.PostAsJsonAsync(
+            "api/v1/bff/desktop/auth/login",
+            new LoginRequestDto
+            {
+                Username = username,
+                Password = password
+            },
+            ct
+        );
+        response.EnsureSuccessStatusCode();
+
+        var dto = await response.Content.ReadFromJsonAsync<LoginResponseDto>(cancellationToken: ct);
+        if (!string.IsNullOrWhiteSpace(dto?.AccessToken))
+        {
+            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", dto.AccessToken);
+        }
+
+        return dto;
+    }
+
+    public async Task<IReadOnlyList<TicketDto>> GetTicketsAsync(CancellationToken ct = default)
+    {
+        var items = await _http.GetFromJsonAsync<List<TicketDto>>("api/v1/bff/desktop/tickets", ct);
+        return items ?? new List<TicketDto>();
+    }
+
+    public async Task LogoutAsync(CancellationToken ct = default)
+    {
+        if (_http.DefaultRequestHeaders.Authorization is not null)
+        {
+            await _http.PostAsync("api/v1/bff/desktop/auth/logout", content: null, ct);
+        }
+
+        _http.DefaultRequestHeaders.Authorization = null;
     }
 }
 

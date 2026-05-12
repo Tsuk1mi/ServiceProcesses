@@ -30,16 +30,4 @@ public partial class MainWindow : Window
         if (Vm == null) return;
         Vm.LoginPassword = ((PasswordBox)sender).Password;
     }
-
-    private void RegisterPasswordBox_OnPasswordChanged(object sender, RoutedEventArgs e)
-    {
-        if (Vm == null) return;
-        Vm.RegisterPassword = ((PasswordBox)sender).Password;
-    }
-
-    private void RegisterPasswordConfirmBox_OnPasswordChanged(object sender, RoutedEventArgs e)
-    {
-        if (Vm == null) return;
-        Vm.RegisterPasswordConfirm = ((PasswordBox)sender).Password;
-    }
 }

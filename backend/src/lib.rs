@@ -4,3 +4,4 @@ pub mod domain;
 pub mod infrastructure;
 pub mod interfaces;
 pub mod ports;
+pub mod query;

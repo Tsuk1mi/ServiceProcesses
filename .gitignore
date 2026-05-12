@@ -28,6 +28,10 @@
 /app/apps/android/**/build/
 /app/apps/android/**/*.iml
 /app/apps/android/local.properties
+/app/apps/mobile/.gradle/
+/app/apps/mobile/**/build/
+/app/apps/mobile/**/*.iml
+/app/apps/mobile/local.properties
 
 # IDE and local env
 .DS_Store

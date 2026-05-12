@@ -11,8 +11,9 @@ use service_processes_core::application::service_request_service::ServiceRequest
 use service_processes_core::application::sla_service::SlaAppService;
 use service_processes_core::application::technician_service::TechnicianAppService;
 use service_processes_core::application::work_order_service::WorkOrderAppService;
-use service_processes_core::auth::{InMemoryUserStore, UserStore};
-use service_processes_core::domain::entities::{Asset, Technician};
+use service_processes_core::auth::{
+    InMemoryRefreshSessionStore, InMemoryUserStore, RefreshSessionStore, UserStore,
+};
 use service_processes_core::domain::errors::DomainError;
 use service_processes_core::infrastructure::in_memory::{
     BasicSlaPolicy, InMemoryAnalyticsQuery, InMemoryAnalyticsSnapshotRepository, InMemoryAssetRepository,
@@ -20,18 +21,20 @@ use service_processes_core::infrastructure::in_memory::{
     InMemoryTechnicianRepository, InMemoryWorkOrderRepository, KeywordPriorityPolicy, StdoutEventPublisher,
 };
 use service_processes_core::infrastructure::jobs::{run_worker, JobClient, JobClientEventPublisher};
+use service_processes_core::infrastructure::metrics::AppMetrics;
 use service_processes_core::infrastructure::postgres::{
-    connect_and_migrate, seed_demo_domain_if_empty, seed_users_if_empty, PgAnalyticsSnapshotRepository,
-    PgAssetRepository, PgAuditRepository, PgEscalationRepository, PgServiceRequestRepository,
-    PgTechnicianRepository, PgUserStore, PgWorkOrderRepository,
+    connect_and_migrate, seed_users_if_empty, PgAnalyticsSnapshotRepository,
+    PgAssetRepository, PgAuditRepository, PgEscalationRepository, PgRefreshSessionStore,
+    PgServiceRequestRepository, PgTechnicianRepository, PgUserStore, PgWorkOrderRepository,
 };
+use service_processes_core::infrastructure::read_model::run_read_model_worker;
 use service_processes_core::infrastructure::redis_cache::RedisCache;
 use service_processes_core::interfaces::http::{router, AppState};
-use service_processes_core::ports::data_scope::DataScope;
 use service_processes_core::ports::outbound::{
     AnalyticsSnapshotRepository, AssetRepository, AuditRepository, EscalationRepository, EventPublisherPort,
     ServiceRequestRepository, TechnicianRepository, WorkOrderRepository,
 };
+use service_processes_core::query::{InMemoryReadModelQuery, PgReadModelQuery, ReadModelQueryPort};
 use tokio::time::sleep;
 
 #[tokio::main]
@@ -49,6 +52,9 @@ async fn main() -> Result<(), DomainError> {
     }
     if mode.eq_ignore_ascii_case("queue_worker") {
         return run_queue_worker().await;
+    }
+    if mode.eq_ignore_ascii_case("read_model_worker") {
+        return run_event_read_model_worker().await;
     }
     run_api().await
 }
@@ -120,6 +126,15 @@ async fn run_sla_worker() -> Result<(), DomainError> {
     }
 }
 
+async fn run_event_read_model_worker() -> Result<(), DomainError> {
+    let db_url = env::var("DATABASE_URL").map_err(|_| DomainError::EmptyField("DATABASE_URL"))?;
+    let amqp_url = env::var("RABBITMQ_URL").map_err(|_| DomainError::EmptyField("RABBITMQ_URL"))?;
+    let queue_name = env::var("READ_MODEL_QUEUE_NAME").unwrap_or_else(|_| "service_read_model".to_string());
+    let metrics = AppMetrics::default();
+    tracing::info!(queue = %queue_name, "read model worker starting");
+    run_read_model_worker(&db_url, &amqp_url, &queue_name, metrics).await
+}
+
 async fn build_state() -> Result<AppState, DomainError> {
     let db_url = env::var("DATABASE_URL").unwrap_or_default();
     if !db_url.is_empty() {
@@ -131,27 +146,25 @@ async fn build_state() -> Result<AppState, DomainError> {
 }
 
 async fn build_state_memory() -> Result<AppState, DomainError> {
+    let metrics = AppMetrics::default();
+    let access_token_ttl_seconds = env::var("JWT_TTL_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(24)
+        * 3600;
+    let refresh_token_ttl_seconds = env::var("REFRESH_TOKEN_TTL_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(24 * 7)
+        * 3600;
     let jwt_secret = Arc::new(
         env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me-please".to_string()),
     );
     let users: Arc<dyn UserStore> = Arc::new(InMemoryUserStore::demo()?);
-    let admin_owner = InMemoryUserStore::demo_admin_id().to_string();
-    let tech_id = InMemoryUserStore::demo_technician_id().to_string();
+    let sessions: Arc<dyn RefreshSessionStore> = Arc::new(InMemoryRefreshSessionStore::new());
 
     let assets_mem = Arc::new(InMemoryAssetRepository::new());
     let assets: Arc<dyn AssetRepository> = assets_mem.clone();
-    assets_mem
-        .save(
-            Asset::new(
-                "asset-1".to_string(),
-                "building".to_string(),
-                "Склад N1".to_string(),
-                "Москва".to_string(),
-                admin_owner.clone(),
-            )?,
-            DataScope::All,
-        )
-        .await?;
 
     let requests = Arc::new(InMemoryRequestRepository::new(Arc::clone(&assets_mem)));
     let requests_dyn: Arc<dyn ServiceRequestRepository> = requests.clone();
@@ -163,18 +176,6 @@ async fn build_state_memory() -> Result<AppState, DomainError> {
     let technicians_dyn: Arc<dyn TechnicianRepository> = technicians.clone();
     let audit = Arc::new(InMemoryAuditRepository::new());
     let audit_dyn: Arc<dyn AuditRepository> = audit.clone();
-
-    technicians
-        .save(
-            Technician::new(
-                tech_id.clone(),
-                "Иван Иванов".to_string(),
-                vec!["electrical".to_string(), "inspection".to_string()],
-                admin_owner.clone(),
-            )?,
-            DataScope::All,
-        )
-        .await?;
 
     let queue_name = env::var("JOB_QUEUE_NAME").unwrap_or_else(|_| "service_jobs".to_string());
     let jobs = match (env::var("REDIS_URL"), env::var("RABBITMQ_URL")) {
@@ -221,6 +222,14 @@ async fn build_state_memory() -> Result<AppState, DomainError> {
         analytics: analytics_query.clone(),
         snapshots: snapshots.clone(),
     };
+    let query_models: Arc<dyn ReadModelQueryPort> = Arc::new(InMemoryReadModelQuery {
+        assets: assets.clone(),
+        requests: requests_dyn.clone(),
+        work_orders: work_orders_dyn.clone(),
+        escalations: escalations_dyn.clone(),
+        technicians: technicians_dyn.clone(),
+        analytics_snapshot_service: analytics_snapshot_service.clone(),
+    });
 
     Ok(AppState {
         assets,
@@ -253,15 +262,31 @@ async fn build_state_memory() -> Result<AppState, DomainError> {
         reporting_service: ReportingAppService {
             analytics: analytics_query.clone(),
         },
+        query_models,
         analytics_snapshot_service,
         jwt_secret,
+        access_token_ttl_seconds,
+        refresh_token_ttl_seconds,
         users,
+        sessions,
         jobs,
         redis_cache,
+        metrics,
     })
 }
 
 async fn build_state_pg(database_url: &str) -> Result<AppState, DomainError> {
+    let metrics = AppMetrics::default();
+    let access_token_ttl_seconds = env::var("JWT_TTL_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(24)
+        * 3600;
+    let refresh_token_ttl_seconds = env::var("REFRESH_TOKEN_TTL_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(24 * 7)
+        * 3600;
     let jwt_secret = Arc::new(
         env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me-please".to_string()),
     );
@@ -279,8 +304,6 @@ async fn build_state_pg(database_url: &str) -> Result<AppState, DomainError> {
 
     let db = connect_and_migrate(database_url).await?;
     seed_users_if_empty(&db).await?;
-    let admin_owner = PgUserStore::demo_admin_subject().to_string();
-    seed_demo_domain_if_empty(&db, admin_owner).await?;
 
     let assets: Arc<dyn AssetRepository> = Arc::new(PgAssetRepository::new(db.clone()));
     let requests: Arc<dyn ServiceRequestRepository> = Arc::new(PgServiceRequestRepository::new(db.clone()));
@@ -289,6 +312,7 @@ async fn build_state_pg(database_url: &str) -> Result<AppState, DomainError> {
     let technicians: Arc<dyn TechnicianRepository> = Arc::new(PgTechnicianRepository::new(db.clone()));
     let audit: Arc<dyn AuditRepository> = Arc::new(PgAuditRepository::new(db.clone()));
     let users: Arc<dyn UserStore> = Arc::new(PgUserStore::new(db.clone()));
+    let sessions: Arc<dyn RefreshSessionStore> = Arc::new(PgRefreshSessionStore::new(db.clone()));
 
     let service = ServiceRequestAppService {
         assets: assets.clone(),
@@ -304,11 +328,12 @@ async fn build_state_pg(database_url: &str) -> Result<AppState, DomainError> {
         escalations: escalations.clone(),
         technicians: technicians.clone(),
     });
-    let snapshots: Arc<dyn AnalyticsSnapshotRepository> = Arc::new(PgAnalyticsSnapshotRepository::new(db));
+    let snapshots: Arc<dyn AnalyticsSnapshotRepository> = Arc::new(PgAnalyticsSnapshotRepository::new(db.clone()));
     let analytics_snapshot_service = AnalyticsSnapshotAppService {
         analytics: analytics_query.clone(),
         snapshots: snapshots.clone(),
     };
+    let query_models: Arc<dyn ReadModelQueryPort> = Arc::new(PgReadModelQuery::new(db.clone()));
 
     Ok(AppState {
         assets,
@@ -341,11 +366,16 @@ async fn build_state_pg(database_url: &str) -> Result<AppState, DomainError> {
         reporting_service: ReportingAppService {
             analytics: analytics_query.clone(),
         },
+        query_models,
         analytics_snapshot_service,
         jwt_secret,
+        access_token_ttl_seconds,
+        refresh_token_ttl_seconds,
         users,
+        sessions,
         jobs: Some(jobs),
         redis_cache,
+        metrics,
     })
 }
 

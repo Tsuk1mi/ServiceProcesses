@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::errors::DomainError;
 
-use crate::auth::principal::AuthUser;
+use crate::auth::{AuthIdentity, principal::AuthUser};
 use crate::auth::UserStore;
 use crate::infrastructure::postgres::entity::{app_user, app_user_role};
 use crate::infrastructure::postgres::repos::db_err;
@@ -24,7 +24,7 @@ impl PgUserStore {
 
 #[async_trait]
 impl UserStore for PgUserStore {
-    async fn verify(&self, username: &str, password: &str) -> Option<AuthUser> {
+    async fn verify(&self, username: &str, password: &str) -> Option<AuthIdentity> {
         let rows = app_user::Entity::find()
             .filter(app_user::Column::Username.eq(username))
             .find_with_related(app_user_role::Entity)
@@ -42,9 +42,31 @@ impl UserStore for PgUserStore {
             return None;
         }
 
-        Some(AuthUser {
-            sub: user.subject_id,
-            roles: roles.into_iter().map(|r| r.role).collect(),
+        Some(AuthIdentity {
+            auth: AuthUser {
+                sub: user.subject_id,
+                roles: roles.into_iter().map(|r| r.role).collect(),
+                session_id: None,
+            },
+            username: user.username,
+        })
+    }
+
+    async fn find_by_subject(&self, subject_id: Uuid) -> Option<AuthIdentity> {
+        let rows = app_user::Entity::find()
+            .filter(app_user::Column::SubjectId.eq(subject_id))
+            .find_with_related(app_user_role::Entity)
+            .all(&self.db)
+            .await
+            .ok()?;
+        let (user, roles) = rows.into_iter().next()?;
+        Some(AuthIdentity {
+            auth: AuthUser {
+                sub: user.subject_id,
+                roles: roles.into_iter().map(|r| r.role).collect(),
+                session_id: None,
+            },
+            username: user.username,
         })
     }
 
@@ -69,15 +91,5 @@ impl UserStore for PgUserStore {
             .await
             .map_err(db_err)?;
         Ok(())
-    }
-}
-
-impl PgUserStore {
-    pub fn demo_admin_subject() -> Uuid {
-        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid")
-    }
-
-    pub fn demo_technician_subject() -> Uuid {
-        Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid")
     }
 }

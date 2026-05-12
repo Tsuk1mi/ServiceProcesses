@@ -1,4 +1,5 @@
 pub mod analytics_snapshot;
+pub mod auth_session;
 pub mod app_user;
 pub mod app_user_role;
 pub mod asset;

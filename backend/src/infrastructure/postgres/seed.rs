@@ -2,13 +2,9 @@ use bcrypt::{hash, DEFAULT_COST};
 use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, Set};
 use uuid::Uuid;
 
-use crate::domain::entities::{Asset, Technician};
 use crate::domain::errors::DomainError;
-use crate::ports::data_scope::DataScope;
-use crate::ports::outbound::{AssetRepository, TechnicianRepository};
-use crate::infrastructure::postgres::entity::{app_user, app_user_role, asset};
+use crate::infrastructure::postgres::entity::{app_user, app_user_role};
 use crate::infrastructure::postgres::repos::db_err;
-
 use sea_orm::DatabaseConnection;
 
 pub async fn seed_users_if_empty(db: &DatabaseConnection) -> Result<(), DomainError> {
@@ -18,10 +14,6 @@ pub async fn seed_users_if_empty(db: &DatabaseConnection) -> Result<(), DomainEr
     }
 
     let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").map_err(|_| DomainError::EmptyField("uuid"))?;
-    let user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000002").map_err(|_| DomainError::EmptyField("uuid"))?;
-    let tech_id = Uuid::parse_str("00000000-0000-0000-0000-000000000003").map_err(|_| DomainError::EmptyField("uuid"))?;
-    let dispatcher_row_id = Uuid::parse_str("00000000-0000-0000-0000-000000000004").map_err(|_| DomainError::EmptyField("uuid"))?;
-
     struct Row {
         id: Uuid,
         subject_id: Uuid,
@@ -37,27 +29,6 @@ pub async fn seed_users_if_empty(db: &DatabaseConnection) -> Result<(), DomainEr
             username: "admin",
             password: "admin",
             roles: &["admin", "dispatcher", "supervisor"],
-        },
-        Row {
-            id: dispatcher_row_id,
-            subject_id: admin_id,
-            username: "dispatcher",
-            password: "dispatcher",
-            roles: &["dispatcher"],
-        },
-        Row {
-            id: user_id,
-            subject_id: user_id,
-            username: "user",
-            password: "user",
-            roles: &["user"],
-        },
-        Row {
-            id: tech_id,
-            subject_id: tech_id,
-            username: "technician",
-            password: "technician",
-            roles: &["technician"],
         },
     ];
 
@@ -88,39 +59,6 @@ pub async fn seed_users_if_empty(db: &DatabaseConnection) -> Result<(), DomainEr
             .map_err(db_err)?;
         }
     }
-
-    Ok(())
-}
-
-pub async fn seed_demo_domain_if_empty(db: &DatabaseConnection, admin_owner: String) -> Result<(), DomainError> {
-    let n = asset::Entity::find().count(db).await.map_err(db_err)?;
-    if n > 0 {
-        return Ok(());
-    }
-
-    let a = Asset::new(
-        "asset-1".to_string(),
-        "building".to_string(),
-        "Склад N1".to_string(),
-        "Москва".to_string(),
-        admin_owner.clone(),
-    )?;
-    crate::infrastructure::postgres::repos::PgAssetRepository::new(db.clone())
-        .save(a, DataScope::All)
-        .await?;
-
-    let tech_id = Uuid::parse_str("00000000-0000-0000-0000-000000000003")
-        .map_err(|_| DomainError::EmptyField("uuid"))?
-        .to_string();
-    let t = Technician::new(
-        tech_id,
-        "Иван Иванов".to_string(),
-        vec!["electrical".to_string(), "inspection".to_string()],
-        admin_owner,
-    )?;
-    crate::infrastructure::postgres::repos::PgTechnicianRepository::new(db.clone())
-        .save(t, DataScope::All)
-        .await?;
 
     Ok(())
 }

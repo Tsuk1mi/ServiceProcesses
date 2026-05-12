@@ -14,6 +14,8 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct Claims {
     pub sub: String,
     pub roles: Vec<String>,
+    pub session_id: Option<String>,
+    pub kind: String,
     pub exp: i64,
 }
 
@@ -34,11 +36,13 @@ fn sign(secret: &[u8], signing_input: &str) -> Result<Vec<u8>, JwtError> {
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
-pub fn sign_token(secret: &str, user: &AuthUser, ttl_hours: i64) -> Result<String, JwtError> {
-    let exp = (Utc::now() + Duration::hours(ttl_hours)).timestamp();
+pub fn sign_access_token(secret: &str, user: &AuthUser, ttl_seconds: i64) -> Result<String, JwtError> {
+    let exp = (Utc::now() + Duration::seconds(ttl_seconds)).timestamp();
     let claims = Claims {
         sub: user.sub.to_string(),
         roles: user.roles.clone(),
+        session_id: user.session_id.map(|value| value.to_string()),
+        kind: "access".to_string(),
         exp,
     };
     let header = JwtHeader {
@@ -53,6 +57,10 @@ pub fn sign_token(secret: &str, user: &AuthUser, ttl_hours: i64) -> Result<Strin
     Ok(format!("{signing_input}.{sig_b64}"))
 }
 
+pub fn sign_token(secret: &str, user: &AuthUser, ttl_hours: i64) -> Result<String, JwtError> {
+    sign_access_token(secret, user, ttl_hours * 3600)
+}
+
 #[derive(Debug)]
 pub enum JwtError {
     Format,
@@ -64,7 +72,7 @@ pub enum JwtError {
     InvalidSub,
 }
 
-pub fn verify_token(secret: &str, token: &str) -> Result<AuthUser, JwtError> {
+pub fn verify_access_token(secret: &str, token: &str) -> Result<AuthUser, JwtError> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return Err(JwtError::Format);
@@ -84,9 +92,23 @@ pub fn verify_token(secret: &str, token: &str) -> Result<AuthUser, JwtError> {
     if claims.exp < Utc::now().timestamp() {
         return Err(JwtError::Expired);
     }
+    if claims.kind != "access" {
+        return Err(JwtError::Format);
+    }
     let sub = uuid::Uuid::parse_str(&claims.sub).map_err(|_| JwtError::InvalidSub)?;
+    let session_id = claims
+        .session_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|_| JwtError::Format)?;
     Ok(AuthUser {
         sub,
         roles: claims.roles,
+        session_id,
     })
+}
+
+pub fn verify_token(secret: &str, token: &str) -> Result<AuthUser, JwtError> {
+    verify_access_token(secret, token)
 }

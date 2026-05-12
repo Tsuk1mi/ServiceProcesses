@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::application::rbac;
 use crate::auth::AuthUser;
+use crate::domain::events::make_event;
 use crate::domain::entities::WorkOrder;
 use crate::domain::errors::DomainError;
 use crate::ports::data_scope::DataScope;
@@ -34,11 +35,18 @@ impl WorkOrderAppService {
 
         let work_order = WorkOrder::new(id, request_id, request.owner_user_id)?;
         self.work_orders.save(work_order.clone(), scope.clone()).await?;
+        let payload = make_event(
+            "work_order.created",
+            work_order.id.clone(),
+            work_order.owner_user_id.clone(),
+            serde_json::json!({
+                "work_order_id": work_order.id,
+                "request_id": work_order.request_id,
+                "status": format!("{:?}", work_order.status)
+            }),
+        )?;
         self.events
-            .publish(
-                "work_order.created",
-                &format!("id={},request_id={}", work_order.id, work_order.request_id),
-            )
+            .publish("work_order.created", &payload)
             .await?;
 
         Ok(work_order)
@@ -73,15 +81,19 @@ impl WorkOrderAppService {
             .ok_or(DomainError::NotFound("work_order"))?;
         work_order.assign(assignee)?;
         self.work_orders.update(work_order.clone(), scope.clone()).await?;
+        let payload = make_event(
+            "work_order.assigned",
+            work_order.id.clone(),
+            work_order.owner_user_id.clone(),
+            serde_json::json!({
+                "work_order_id": work_order.id,
+                "request_id": work_order.request_id,
+                "assignee": work_order.assignee.clone(),
+                "status": format!("{:?}", work_order.status)
+            }),
+        )?;
         self.events
-            .publish(
-                "work_order.assigned",
-                &format!(
-                    "id={},assignee={}",
-                    work_order.id,
-                    work_order.assignee.clone().unwrap_or_default()
-                ),
-            )
+            .publish("work_order.assigned", &payload)
             .await?;
         Ok(work_order)
     }
@@ -95,8 +107,18 @@ impl WorkOrderAppService {
             .ok_or(DomainError::NotFound("work_order"))?;
         work_order.start()?;
         self.work_orders.update(work_order.clone(), scope.clone()).await?;
+        let payload = make_event(
+            "work_order.started",
+            work_order.id.clone(),
+            work_order.owner_user_id.clone(),
+            serde_json::json!({
+                "work_order_id": work_order.id,
+                "request_id": work_order.request_id,
+                "status": format!("{:?}", work_order.status)
+            }),
+        )?;
         self.events
-            .publish("work_order.started", &format!("id={}", work_order.id))
+            .publish("work_order.started", &payload)
             .await?;
         Ok(work_order)
     }
@@ -125,8 +147,18 @@ impl WorkOrderAppService {
         }
         work_order.start()?;
         self.work_orders.update(work_order.clone(), scope.clone()).await?;
+        let payload = make_event(
+            "work_order.started",
+            work_order.id.clone(),
+            work_order.owner_user_id.clone(),
+            serde_json::json!({
+                "work_order_id": work_order.id,
+                "request_id": work_order.request_id,
+                "status": format!("{:?}", work_order.status)
+            }),
+        )?;
         self.events
-            .publish("work_order.started", &format!("id={}", work_order.id))
+            .publish("work_order.started", &payload)
             .await?;
         Ok(work_order)
     }
@@ -140,8 +172,18 @@ impl WorkOrderAppService {
             .ok_or(DomainError::NotFound("work_order"))?;
         work_order.complete()?;
         self.work_orders.update(work_order.clone(), scope.clone()).await?;
+        let payload = make_event(
+            "work_order.completed",
+            work_order.id.clone(),
+            work_order.owner_user_id.clone(),
+            serde_json::json!({
+                "work_order_id": work_order.id,
+                "request_id": work_order.request_id,
+                "status": format!("{:?}", work_order.status)
+            }),
+        )?;
         self.events
-            .publish("work_order.completed", &format!("id={}", work_order.id))
+            .publish("work_order.completed", &payload)
             .await?;
         Ok(work_order)
     }
@@ -170,8 +212,18 @@ impl WorkOrderAppService {
         }
         work_order.complete()?;
         self.work_orders.update(work_order.clone(), scope.clone()).await?;
+        let payload = make_event(
+            "work_order.completed",
+            work_order.id.clone(),
+            work_order.owner_user_id.clone(),
+            serde_json::json!({
+                "work_order_id": work_order.id,
+                "request_id": work_order.request_id,
+                "status": format!("{:?}", work_order.status)
+            }),
+        )?;
         self.events
-            .publish("work_order.completed", &format!("id={}", work_order.id))
+            .publish("work_order.completed", &payload)
             .await?;
         Ok(work_order)
     }

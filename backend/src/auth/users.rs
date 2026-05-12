@@ -7,9 +7,16 @@ use uuid::Uuid;
 use crate::auth::principal::AuthUser;
 use crate::domain::errors::DomainError;
 
+#[derive(Debug, Clone)]
+pub struct AuthIdentity {
+    pub auth: AuthUser,
+    pub username: String,
+}
+
 #[derive(Clone)]
 struct Account {
     id: Uuid,
+    username: String,
     password_hash: String,
     roles: Vec<String>,
 }
@@ -25,43 +32,14 @@ impl InMemoryUserStore {
 
         let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001")
             .map_err(|_| DomainError::EmptyField("admin id"))?;
-        let user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000002")
-            .map_err(|_| DomainError::EmptyField("user id"))?;
 
         by_username.insert(
             "admin".to_string(),
             Account {
                 id: admin_id,
+                username: "admin".to_string(),
                 password_hash: hash("admin", DEFAULT_COST).map_err(|_| DomainError::EmptyField("bcrypt"))?,
                 roles: vec!["admin".to_string(), "dispatcher".to_string(), "supervisor".to_string()],
-            },
-        );
-        by_username.insert(
-            "dispatcher".to_string(),
-            Account {
-                id: admin_id,
-                password_hash: hash("dispatcher", DEFAULT_COST).map_err(|_| DomainError::EmptyField("bcrypt"))?,
-                roles: vec!["dispatcher".to_string()],
-            },
-        );
-        by_username.insert(
-            "user".to_string(),
-            Account {
-                id: user_id,
-                password_hash: hash("user", DEFAULT_COST).map_err(|_| DomainError::EmptyField("bcrypt"))?,
-                roles: vec!["user".to_string()],
-            },
-        );
-
-        let tech_id = Uuid::parse_str("00000000-0000-0000-0000-000000000003")
-            .map_err(|_| DomainError::EmptyField("tech id"))?;
-        by_username.insert(
-            "technician".to_string(),
-            Account {
-                id: tech_id,
-                password_hash: hash("technician", DEFAULT_COST)
-                    .map_err(|_| DomainError::EmptyField("bcrypt"))?,
-                roles: vec!["technician".to_string()],
             },
         );
 
@@ -71,19 +49,13 @@ impl InMemoryUserStore {
     pub fn demo_admin_id() -> Uuid {
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid")
     }
-
-    pub fn demo_user_id() -> Uuid {
-        Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("uuid")
-    }
-
-    pub fn demo_technician_id() -> Uuid {
-        Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid")
-    }
 }
 
 #[async_trait]
 pub trait UserStore: Send + Sync {
-    async fn verify(&self, username: &str, password: &str) -> Option<AuthUser>;
+    async fn verify(&self, username: &str, password: &str) -> Option<AuthIdentity>;
+
+    async fn find_by_subject(&self, subject_id: Uuid) -> Option<AuthIdentity>;
 
     /// Назначить роль по `subject_id` (UUID субъекта в JWT). Реализовано для PostgreSQL.
     async fn add_role_for_subject(&self, _subject_id: Uuid, _role: &str) -> Result<(), DomainError> {
@@ -93,16 +65,20 @@ pub trait UserStore: Send + Sync {
 
 #[async_trait]
 impl UserStore for InMemoryUserStore {
-    async fn verify(&self, username: &str, password: &str) -> Option<AuthUser> {
+    async fn verify(&self, username: &str, password: &str) -> Option<AuthIdentity> {
         let this = self.clone();
         let u = username.to_string();
         let p = password.to_string();
         tokio::task::spawn_blocking(move || {
             let acc = this.by_username.get(&u)?;
             if verify(p, &acc.password_hash).ok()? {
-                Some(AuthUser {
-                    sub: acc.id,
-                    roles: acc.roles.clone(),
+                Some(AuthIdentity {
+                    auth: AuthUser {
+                        sub: acc.id,
+                        roles: acc.roles.clone(),
+                        session_id: None,
+                    },
+                    username: acc.username.clone(),
                 })
             } else {
                 None
@@ -111,6 +87,20 @@ impl UserStore for InMemoryUserStore {
         .await
         .ok()
         .flatten()
+    }
+
+    async fn find_by_subject(&self, subject_id: Uuid) -> Option<AuthIdentity> {
+        self.by_username
+            .values()
+            .find(|account| account.id == subject_id)
+            .map(|account| AuthIdentity {
+                auth: AuthUser {
+                    sub: account.id,
+                    roles: account.roles.clone(),
+                    session_id: None,
+                },
+                username: account.username.clone(),
+            })
     }
 
     async fn add_role_for_subject(&self, _subject_id: Uuid, _role: &str) -> Result<(), DomainError> {

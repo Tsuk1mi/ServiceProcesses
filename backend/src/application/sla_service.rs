@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::application::rbac;
 use crate::auth::AuthUser;
+use crate::domain::events::make_event;
 use crate::domain::entities::{Escalation, ServiceRequest};
 use crate::domain::errors::DomainError;
 use crate::domain::value_objects::EscalationState;
@@ -47,11 +48,20 @@ impl SlaAppService {
             let esc_id = format!("esc-worker-{}-{}", now_epoch, req.id);
             let escalation = Escalation::new(esc_id, req.id.clone(), reason.to_string(), req.owner_user_id.clone())?;
             self.escalations.save(escalation.clone(), DataScope::All).await?;
+            let payload = make_event(
+                "escalation.created",
+                escalation.id.clone(),
+                escalation.owner_user_id.clone(),
+                serde_json::json!({
+                    "escalation_id": escalation.id,
+                    "request_id": escalation.request_id,
+                    "reason": escalation.reason,
+                    "state": format!("{:?}", escalation.state),
+                    "source": "sla_worker"
+                }),
+            )?;
             self.events
-                .publish(
-                    "service_request.escalated",
-                    &format!("id={},request_id={}", escalation.id, escalation.request_id),
-                )
+                .publish("escalation.created", &payload)
                 .await?;
             created.push(escalation);
         }
